@@ -73,7 +73,7 @@ func parseFlags() Config {
 		StringVar(&cfg.StreamFilter)
 
 	app.Flag("batch-size", "Messages per batch request").
-		Default("100").
+		Default("1000").
 		IntVar(&cfg.BatchSize)
 
 	app.Flag("limit", "Max messages to analyze per stream (0 = all)").
@@ -225,7 +225,7 @@ func run(cfg Config) error {
 
 		fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamName, msgCount)
 
-		messages, err := FetchStreamMessages(ctx, stream, cfg.BatchSize, cfg.Limit, PrintProgress)
+		messages, err := FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, PrintProgress)
 		ClearProgress()
 		if err != nil {
 			fmt.Printf("Warning: failed to fetch messages from %s: %v\n", streamName, err)

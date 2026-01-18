@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -16,7 +17,7 @@ func ConnectNATS(contextName string) (*nats.Conn, jetstream.JetStream, error) {
 		return nil, nil, fmt.Errorf("failed to connect: %w", err)
 	}
 
-	js, err := jetstream.New(nc)
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(5*time.Minute))
 	if err != nil {
 		nc.Close()
 		return nil, nil, fmt.Errorf("failed to create JetStream context: %w", err)
@@ -50,16 +51,20 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilter 
 	// List all streams and filter for limits retention
 	streamLister := js.ListStreams(ctx)
 
+	i := 1
 	for stream := range streamLister.Info() {
 		if stream.Config.Retention == jetstream.LimitsPolicy {
+			fmt.Printf("Found stream number %d\r", i)
 			s, err := js.Stream(ctx, stream.Config.Name)
 			if err != nil {
 				fmt.Printf("Warning: failed to get stream %s: %v\n", stream.Config.Name, err)
 				continue
 			}
 			limitsStreams = append(limitsStreams, s)
+			i++
 		}
 	}
+	println()
 
 	if err := streamLister.Err(); err != nil {
 		return nil, fmt.Errorf("error listing streams: %w", err)

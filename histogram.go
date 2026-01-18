@@ -37,6 +37,14 @@ type RateStatistics struct {
 	MinThroughput  float64
 	MaxThroughput  float64
 	StdDevTput     float64
+	AvgMsgSize     float64 // message size in bytes
+	P50MsgSize     float64
+	P90MsgSize     float64
+	P99MsgSize     float64
+	P999MsgSize    float64
+	MinMsgSize     int
+	MaxMsgSize     int
+	StdDevMsgSize  float64
 	ActiveBuckets  int // buckets with at least one message
 	TotalBuckets   int
 }
@@ -145,9 +153,10 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 		buckets[i].End = buckets[i].Start.Add(granularity)
 	}
 
-	// Count messages and bytes per bucket
+	// Count messages and bytes per bucket, collect message sizes
 	var totalBytes int64
-	for _, msg := range messages {
+	msgSizes := make([]int, len(messages))
+	for i, msg := range messages {
 		bucketIdx := int(msg.Timestamp.Sub(startTime) / granularity)
 		if bucketIdx >= len(buckets) {
 			bucketIdx = len(buckets) - 1
@@ -158,6 +167,7 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 		buckets[bucketIdx].Count++
 		buckets[bucketIdx].Bytes += int64(msg.Size)
 		totalBytes += int64(msg.Size)
+		msgSizes[i] = msg.Size
 	}
 
 	// Calculate rates and throughput
@@ -172,13 +182,13 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 		Granularity: granularity,
 	}
 
-	hist.Stats = calculateRateStats(buckets, len(messages), totalBytes, endTime.Sub(startTime))
+	hist.Stats = calculateRateStats(buckets, len(messages), totalBytes, endTime.Sub(startTime), msgSizes)
 
 	return hist
 }
 
-// calculateRateStats computes statistics from rate buckets
-func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int64, totalDuration time.Duration) RateStatistics {
+// calculateRateStats computes statistics from rate buckets and message sizes
+func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int64, totalDuration time.Duration, msgSizes []int) RateStatistics {
 	if len(buckets) == 0 {
 		return RateStatistics{}
 	}
@@ -257,6 +267,44 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 		sumSquaredDiff += diff * diff
 	}
 	stats.StdDevTput = math.Sqrt(sumSquaredDiff / float64(len(throughputs)))
+
+	// Calculate message size statistics
+	if len(msgSizes) > 0 {
+		// Convert to float64 for percentile calculation and find min/max
+		sizesFloat := make([]float64, len(msgSizes))
+		var sumSize float64
+		stats.MinMsgSize = msgSizes[0]
+		stats.MaxMsgSize = msgSizes[0]
+
+		for i, size := range msgSizes {
+			sizesFloat[i] = float64(size)
+			sumSize += float64(size)
+			if size < stats.MinMsgSize {
+				stats.MinMsgSize = size
+			}
+			if size > stats.MaxMsgSize {
+				stats.MaxMsgSize = size
+			}
+		}
+
+		stats.AvgMsgSize = sumSize / float64(len(msgSizes))
+
+		// Sort for percentiles
+		sort.Float64s(sizesFloat)
+
+		stats.P50MsgSize = percentileFloat64(sizesFloat, 0.50)
+		stats.P90MsgSize = percentileFloat64(sizesFloat, 0.90)
+		stats.P99MsgSize = percentileFloat64(sizesFloat, 0.99)
+		stats.P999MsgSize = percentileFloat64(sizesFloat, 0.999)
+
+		// Standard deviation for message size
+		sumSquaredDiff = 0
+		for _, size := range sizesFloat {
+			diff := size - stats.AvgMsgSize
+			sumSquaredDiff += diff * diff
+		}
+		stats.StdDevMsgSize = math.Sqrt(sumSquaredDiff / float64(len(sizesFloat)))
+	}
 
 	return stats
 }

@@ -301,6 +301,20 @@ func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 		fmt.Printf("    Std Dev:        %s/s\n", formatBytes(int64(stats.StdDevTput)))
 		fmt.Println()
 	}
+
+	// Always show message size stats if we have messages
+	if stats.TotalMessages > 0 {
+		fmt.Println("  Message Size:")
+		fmt.Printf("    Average:        %s\n", formatBytes(int64(stats.AvgMsgSize)))
+		fmt.Printf("    P50:            %s\n", formatBytes(int64(stats.P50MsgSize)))
+		fmt.Printf("    P90:            %s\n", formatBytes(int64(stats.P90MsgSize)))
+		fmt.Printf("    P99:            %s\n", formatBytes(int64(stats.P99MsgSize)))
+		fmt.Printf("    P99.9:          %s\n", formatBytes(int64(stats.P999MsgSize)))
+		fmt.Printf("    Min:            %s\n", formatBytes(int64(stats.MinMsgSize)))
+		fmt.Printf("    Max:            %s\n", formatBytes(int64(stats.MaxMsgSize)))
+		fmt.Printf("    Std Dev:        %s\n", formatBytes(int64(stats.StdDevMsgSize)))
+		fmt.Println()
+	}
 }
 
 // formatDuration formats a duration in a human-readable way
