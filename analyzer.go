@@ -20,7 +20,9 @@ type MessageData struct {
 type ProgressFunc func(current, total int)
 
 // FetchStreamMessages retrieves messages from a stream using jetstreamext.GetBatch
-func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, batchSize, limit int, progress ProgressFunc) ([]MessageData, error) {
+// If startTime is specified, fetching starts from that time. If endTime is specified,
+// fetching stops when messages exceed that time.
+func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, batchSize, limit int, startTime, endTime *time.Time, progress ProgressFunc) ([]MessageData, error) {
 	info := stream.CachedInfo()
 	streamName := info.Config.Name
 	firstSeq := info.State.FirstSeq
@@ -29,7 +31,7 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 		return nil, nil
 	}
 
-	// Determine how many messages to fetch
+	// Determine how many messages to fetch (this is an upper bound estimate)
 	totalToFetch := int(info.State.Msgs)
 	if limit > 0 && limit < totalToFetch {
 		totalToFetch = limit
@@ -37,27 +39,46 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 
 	messages := make([]MessageData, 0, totalToFetch)
 	currentSeq := firstSeq
+	useStartTime := startTime != nil // Use start time for the first batch only
 
-	for len(messages) < totalToFetch {
-		// Calculate remaining messages to fetch
-		remaining := totalToFetch - len(messages)
+	for limit == 0 || len(messages) < limit {
+		// Calculate fetch size
 		fetchSize := batchSize
-		if remaining < batchSize {
-			fetchSize = remaining
+		if limit > 0 {
+			remaining := limit - len(messages)
+			if remaining < batchSize {
+				fetchSize = remaining
+			}
+		}
+
+		// Build options for GetBatch
+		var opts []jetstreamext.GetBatchOpt
+		if useStartTime {
+			opts = append(opts, jetstreamext.GetBatchStartTime(*startTime))
+			useStartTime = false // Only use start time for the first batch
+		} else {
+			opts = append(opts, jetstreamext.GetBatchSeq(currentSeq))
 		}
 
 		// Fetch batch using GetBatch
-		msgIter, err := jetstreamext.GetBatch(ctx, js, streamName, fetchSize, jetstreamext.GetBatchSeq(currentSeq))
+		msgIter, err := jetstreamext.GetBatch(ctx, js, streamName, fetchSize, opts...)
 		if err != nil {
 			return messages, err
 		}
 
 		batchCount := 0
 		var lastSeq uint64
+		hitEndTime := false
 		for msg, err := range msgIter {
 			if err != nil {
 				// Skip errors (message might have been deleted)
 				continue
+			}
+
+			// Check if message is past end time
+			if endTime != nil && msg.Time.After(*endTime) {
+				hitEndTime = true
+				break
 			}
 
 			messages = append(messages, MessageData{
@@ -79,8 +100,8 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 			}
 		}
 
-		// If no messages were fetched in this batch, we're done
-		if batchCount == 0 {
+		// Stop if we hit end time or no messages were fetched
+		if hitEndTime || batchCount == 0 {
 			break
 		}
 

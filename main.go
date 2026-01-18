@@ -73,7 +73,7 @@ func parseFlags() Config {
 		StringVar(&cfg.StreamFilter)
 
 	app.Flag("batch-size", "Messages per batch request").
-		Default("1000").
+		Default("10000").
 		IntVar(&cfg.BatchSize)
 
 	app.Flag("limit", "Max messages to analyze per stream (0 = all)").
@@ -133,25 +133,6 @@ func parseTimestamp(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unable to parse timestamp %q (use RFC3339 or 2006-01-02 15:04:05 format)", s)
-}
-
-// filterMessagesByTime filters messages to only include those within the time range
-func filterMessagesByTime(messages []MessageData, startTime, endTime *time.Time) []MessageData {
-	if startTime == nil && endTime == nil {
-		return messages
-	}
-
-	filtered := make([]MessageData, 0, len(messages))
-	for _, msg := range messages {
-		if startTime != nil && msg.Timestamp.Before(*startTime) {
-			continue
-		}
-		if endTime != nil && msg.Timestamp.After(*endTime) {
-			continue
-		}
-		filtered = append(filtered, msg)
-	}
-	return filtered
 }
 
 func run(cfg Config) error {
@@ -225,7 +206,7 @@ func run(cfg Config) error {
 
 		fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamName, msgCount)
 
-		messages, err := FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, PrintProgress)
+		messages, err := FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, startTime, endTime, PrintProgress)
 		ClearProgress()
 		if err != nil {
 			fmt.Printf("Warning: failed to fetch messages from %s: %v\n", streamName, err)
@@ -233,7 +214,11 @@ func run(cfg Config) error {
 		}
 
 		if len(messages) == 0 {
-			fmt.Printf("Stream %s has no messages to analyze\n\n", streamName)
+			if startTime != nil || endTime != nil {
+				fmt.Printf("Stream %s has no messages in the specified time range\n", streamName)
+			} else {
+				fmt.Printf("Stream %s has no messages to analyze\n\n", streamName)
+			}
 			continue
 		}
 
@@ -241,13 +226,6 @@ func run(cfg Config) error {
 		sort.Slice(messages, func(i, j int) bool {
 			return messages[i].Timestamp.Before(messages[j].Timestamp)
 		})
-
-		// Apply time filter
-		messages = filterMessagesByTime(messages, startTime, endTime)
-		if len(messages) == 0 {
-			fmt.Printf("Stream %s has no messages in the specified time range\n", streamName)
-			continue
-		}
 
 		streamMessages[streamName] = messages
 		allMessages = append(allMessages, messages...)
