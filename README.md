@@ -62,4 +62,4 @@ Statistics:
 
 Can also create ascii time series and generate CSV files.
 
-WARNING: will attempt to get every single message on the stream(s) so it can create quite a load on the system while it is running.
+Note: Running this can be impactful on the NATS servers as it will try to get every single message from every single limits stream within the specified time interval (one by one and using batched direct gets to try and limit the impact).

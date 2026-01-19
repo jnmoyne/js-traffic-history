@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/dustin/go-humanize"
 )
 
 const (
@@ -347,11 +349,13 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 // printRateStats prints the rate and throughput statistics
 func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 	fmt.Println("Statistics:")
-	fmt.Printf("  Total Messages:   %d\n", stats.TotalMessages)
-	fmt.Printf("  Total Data:       %s\n", formatBytes(stats.TotalBytes))
-	fmt.Printf("  Time Span:        %s\n", formatDuration(stats.TotalDuration))
-	fmt.Printf("  Total Buckets:    %d (active: %d, %.1f%%)\n",
-		stats.TotalBuckets, stats.ActiveBuckets,
+	fmt.Printf("  Total Messages:                %s\n", humanize.Comma(int64(stats.TotalMessages)))
+	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
+	fmt.Printf("  Total Data:                    %s\n", formatBytes(stats.TotalBytes))
+	fmt.Printf("  Time Span:                     %s\n", formatDuration(stats.TotalDuration))
+	fmt.Printf("  Total Buckets:                 %s (active: %s, %.1f%%)\n",
+		humanize.Comma(int64(stats.TotalBuckets)),
+		humanize.Comma(int64(stats.ActiveBuckets)),
 		float64(stats.ActiveBuckets)/float64(stats.TotalBuckets)*100)
 	fmt.Println()
 

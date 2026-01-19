@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/choria-io/fisk v0.7.2
+	github.com/dustin/go-humanize v1.0.1
 	github.com/nats-io/nats.go v1.48.0
 	github.com/synadia-io/orbit.go/jetstreamext v0.2.0
 	github.com/synadia-io/orbit.go/natscontext v0.1.1
