@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"encoding/csv"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -37,7 +39,7 @@ func ClearProgress() {
 }
 
 // PrintReportSummary prints the overall summary at the start of the report
-func PrintReportSummary(summary ReportSummary) {
+func PrintReportSummary(summary ReportSummary, stats *RateStatistics, perStream bool) {
 	fmt.Println(strings.Repeat("=", headerWidth))
 	fmt.Println("TRAFFIC HISTORY REPORT")
 	fmt.Println(strings.Repeat("=", headerWidth))
@@ -58,13 +60,68 @@ func PrintReportSummary(summary ReportSummary) {
 	fmt.Printf("  Total Data:       %s\n", formatBytes(summary.TotalBytes))
 	if summary.Duration.Seconds() > 0 {
 		fmt.Printf("  Avg Throughput:   %s/s\n", formatBytes(int64(float64(summary.TotalBytes)/summary.Duration.Seconds())))
-		fmt.Printf("  Avg Rate:         %.2f msg/s\n", float64(summary.TotalMsgs)/summary.Duration.Seconds())
 	}
 	fmt.Println()
 
-	// Print stream breakdown
-	if len(summary.Streams) > 0 {
-		fmt.Println("Streams by Message Count:")
+	// Print detailed stats
+	if stats != nil {
+		fmt.Println("  Message Rate (by stored msgs):")
+		fmt.Printf("    Average:        %.2f msg/s\n", stats.AvgRate)
+		fmt.Printf("    P50:            %.2f msg/s\n", stats.P50Rate)
+		fmt.Printf("    P90:            %.2f msg/s\n", stats.P90Rate)
+		fmt.Printf("    P99:            %.2f msg/s\n", stats.P99Rate)
+		fmt.Printf("    P99.9:          %.2f msg/s\n", stats.P999Rate)
+		fmt.Printf("    Min:            %.2f msg/s\n", stats.MinRate)
+		fmt.Printf("    Max:            %.2f msg/s\n", stats.MaxRate)
+		fmt.Printf("    Std Dev:        %.2f msg/s\n", stats.StdDevRate)
+		fmt.Println()
+
+		fmt.Println("  Message Rate (by seq nums):")
+		fmt.Printf("    Average:        %.2f msg/s\n", summary.SeqRate)
+		fmt.Println()
+
+		fmt.Println("  Throughput:")
+		fmt.Printf("    Average:        %s/s\n", formatBytes(int64(stats.AvgThroughput)))
+		fmt.Printf("    P50:            %s/s\n", formatBytes(int64(stats.P50Throughput)))
+		fmt.Printf("    P90:            %s/s\n", formatBytes(int64(stats.P90Throughput)))
+		fmt.Printf("    P99:            %s/s\n", formatBytes(int64(stats.P99Throughput)))
+		fmt.Printf("    P99.9:          %s/s\n", formatBytes(int64(stats.P999Throughput)))
+		fmt.Printf("    Min:            %s/s\n", formatBytes(int64(stats.MinThroughput)))
+		fmt.Printf("    Max:            %s/s\n", formatBytes(int64(stats.MaxThroughput)))
+		fmt.Printf("    Std Dev:        %s/s\n", formatBytes(int64(stats.StdDevTput)))
+		fmt.Println()
+
+		fmt.Println("  Message Size:")
+		fmt.Printf("    Average:        %s\n", formatBytes(int64(stats.AvgMsgSize)))
+		fmt.Printf("    P50:            %s\n", formatBytes(int64(stats.P50MsgSize)))
+		fmt.Printf("    P90:            %s\n", formatBytes(int64(stats.P90MsgSize)))
+		fmt.Printf("    P99:            %s\n", formatBytes(int64(stats.P99MsgSize)))
+		fmt.Printf("    P99.9:          %s\n", formatBytes(int64(stats.P999MsgSize)))
+		fmt.Printf("    Min:            %s\n", formatBytes(int64(stats.MinMsgSize)))
+		fmt.Printf("    Max:            %s\n", formatBytes(int64(stats.MaxMsgSize)))
+		fmt.Printf("    Std Dev:        %s\n", formatBytes(int64(stats.StdDevMsgSize)))
+		fmt.Println()
+	}
+
+	// Print stream breakdown as aligned table
+	if len(summary.Streams) > 0 && perStream {
+		// Find max stream name length for alignment
+		maxNameLen := 6 // minimum "Stream" header width
+		for _, s := range summary.Streams {
+			if len(s.Name) > maxNameLen {
+				maxNameLen = len(s.Name)
+			}
+		}
+
+		// Table 1: Streams by Stored Message Count
+		fmt.Println("Streams by Stored Message Count:")
+		fmt.Printf("  %-*s | %10s | %10s | %s\n", maxNameLen, "Stream", "Messages", "Data", "Graph")
+		fmt.Printf("  %s-+-%s-+-%s-+-%s\n",
+			strings.Repeat("-", maxNameLen),
+			strings.Repeat("-", 10),
+			strings.Repeat("-", 10),
+			strings.Repeat("-", graphWidth))
+
 		maxMsgs := summary.Streams[0].Messages
 		for _, s := range summary.Streams {
 			barLen := int((float64(s.Messages) / float64(maxMsgs)) * float64(graphWidth))
@@ -72,7 +129,37 @@ func PrintReportSummary(summary ReportSummary) {
 				barLen = 1
 			}
 			bar := strings.Repeat("█", barLen)
-			fmt.Printf("  %-20s %8d msgs %10s | %s\n", s.Name, s.Messages, formatBytes(s.Bytes), bar)
+			fmt.Printf("  %-*s | %10d | %10s | %s\n", maxNameLen, s.Name, s.Messages, formatBytes(s.Bytes), bar)
+		}
+		fmt.Println()
+
+		// Table 2: Streams by Sequence Number Count
+		// Sort streams by sequence count for this table
+		streamsBySeq := make([]StreamSummary, len(summary.Streams))
+		copy(streamsBySeq, summary.Streams)
+		slices.SortFunc(streamsBySeq, func(a, b StreamSummary) int {
+			seqCountA := a.LastSeq - a.FirstSeq + 1
+			seqCountB := b.LastSeq - b.FirstSeq + 1
+			return cmp.Compare(seqCountB, seqCountA) // descending order
+		})
+
+		fmt.Println("Streams by Sequence Number Count:")
+		fmt.Printf("  %-*s | %10s | %12s | %s\n", maxNameLen, "Stream", "Seq Count", "Avg Rate", "Graph")
+		fmt.Printf("  %s-+-%s-+-%s-+-%s\n",
+			strings.Repeat("-", maxNameLen),
+			strings.Repeat("-", 10),
+			strings.Repeat("-", 12),
+			strings.Repeat("-", graphWidth))
+
+		maxSeqCount := streamsBySeq[0].LastSeq - streamsBySeq[0].FirstSeq + 1
+		for _, s := range streamsBySeq {
+			seqCount := s.LastSeq - s.FirstSeq + 1
+			barLen := int((float64(seqCount) / float64(maxSeqCount)) * float64(graphWidth))
+			if barLen < 1 && seqCount > 0 {
+				barLen = 1
+			}
+			bar := strings.Repeat("█", barLen)
+			fmt.Printf("  %-*s | %10d | %9.2f/s | %s\n", maxNameLen, s.Name, seqCount, s.SeqRate, bar)
 		}
 		fmt.Println()
 	}
@@ -82,14 +169,6 @@ func PrintReportSummary(summary ReportSummary) {
 func PrintStreamHeader(streamName string, msgCount int) {
 	fmt.Println(strings.Repeat("-", headerWidth))
 	fmt.Printf("Stream: %s (%d messages)\n", streamName, msgCount)
-	fmt.Println(strings.Repeat("-", headerWidth))
-	fmt.Println()
-}
-
-// PrintCombinedHeader prints a header for combined analysis
-func PrintCombinedHeader(streamCount, msgCount int) {
-	fmt.Println(strings.Repeat("-", headerWidth))
-	fmt.Printf("COMBINED (%d streams, %d total messages)\n", streamCount, msgCount)
 	fmt.Println(strings.Repeat("-", headerWidth))
 	fmt.Println()
 }
@@ -104,7 +183,7 @@ type GraphOptions struct {
 
 // PrintRateHistogram displays the rate over time and statistics
 func PrintRateHistogram(hist *RateHistogram, opts GraphOptions) {
-	fmt.Printf("-- Message Rate Over Time (granularity: %s) %s\n", formatDuration(hist.Granularity), strings.Repeat("-", 22))
+	fmt.Printf("-- Stored Message Rate Over Time (granularity: %s) %s\n", formatDuration(hist.Granularity), strings.Repeat("-", 22))
 	fmt.Println()
 
 	if len(hist.Buckets) == 0 {
@@ -277,7 +356,7 @@ func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 	fmt.Println()
 
 	if showRate {
-		fmt.Println("  Message Rate:")
+		fmt.Println("  Message Storage Rate:")
 		fmt.Printf("    Average:        %.2f msg/s\n", stats.AvgRate)
 		fmt.Printf("    P50:            %.2f msg/s\n", stats.P50Rate)
 		fmt.Printf("    P90:            %.2f msg/s\n", stats.P90Rate)
@@ -286,6 +365,10 @@ func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 		fmt.Printf("    Min:            %.2f msg/s\n", stats.MinRate)
 		fmt.Printf("    Max:            %.2f msg/s\n", stats.MaxRate)
 		fmt.Printf("    Std Dev:        %.2f msg/s\n", stats.StdDevRate)
+		fmt.Println()
+
+		fmt.Println("  Message Storage Rate by sequence numbers:")
+		fmt.Printf("    Average:        %.2f msg/s\n", stats.SeqRate)
 		fmt.Println()
 	}
 

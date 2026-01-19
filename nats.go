@@ -54,7 +54,6 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilter 
 	i := 1
 	for stream := range streamLister.Info() {
 		if stream.Config.Retention == jetstream.LimitsPolicy {
-			fmt.Printf("Found stream number %d\r", i)
 			s, err := js.Stream(ctx, stream.Config.Name)
 			if err != nil {
 				fmt.Printf("Warning: failed to get stream %s: %v\n", stream.Config.Name, err)

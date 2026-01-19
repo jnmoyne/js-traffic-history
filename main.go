@@ -30,6 +30,7 @@ type Config struct {
 	StartTime       string
 	EndTime         string
 	Since           time.Duration
+	ShowProgress    bool
 }
 
 func main() {
@@ -44,9 +45,9 @@ func main() {
 func parseFlags() Config {
 	cfg := Config{}
 
-	app := fisk.New("js-traffic-history", "Analyze message rates across NATS JetStream streams with limits retention policy")
+	app := fisk.New("js-traffic-history", "Analyze stored message rates across NATS JetStream for accessible streams in the account (with limits retention policy)")
 	app.Version(version)
-	app.Author("Synadia")
+	app.Author("JNM at Synadia")
 
 	app.Flag("context", "NATS context name (uses default if empty)").
 		Short('c').
@@ -82,7 +83,8 @@ func parseFlags() Config {
 		IntVar(&cfg.Limit)
 
 	app.Flag("per-stream", "Also show stats and graphs for each individual stream").
-		UnNegatableBoolVar(&cfg.PerStream)
+		Default("true").
+		BoolVar(&cfg.PerStream)
 
 	app.Flag("csv", "Export histogram data to CSV file").
 		StringVar(&cfg.CSVFile)
@@ -99,6 +101,10 @@ func parseFlags() Config {
 
 	app.Flag("since", "Relative start time (e.g., 1h, 30m, 2h30m)").
 		DurationVar(&cfg.Since)
+
+	app.Flag("progress", "Show progress during message fetching").
+		Default("true").
+		BoolVar(&cfg.ShowProgress)
 
 	app.MustParseWithUsage(os.Args[1:])
 
@@ -173,8 +179,6 @@ func run(cfg Config) error {
 		fmt.Println()
 	}
 
-	// Connect to NATS
-	fmt.Println("Connecting to NATS...")
 	nc, js, err := ConnectNATS(cfg.Context)
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
@@ -182,7 +186,10 @@ func run(cfg Config) error {
 	defer nc.Close()
 
 	// Get streams with limits retention
-	fmt.Println("Discovering streams with limits retention policy...")
+	if cfg.ShowProgress {
+		fmt.Println("Discovering streams with limits retention policy...")
+	}
+
 	streams, err := GetLimitsStreams(ctx, js, cfg.StreamFilter)
 	if err != nil {
 		return fmt.Errorf("failed to get streams: %w", err)
@@ -193,7 +200,9 @@ func run(cfg Config) error {
 		return nil
 	}
 
-	fmt.Printf("Found %d stream(s) to analyze\n\n", len(streams))
+	if cfg.ShowProgress {
+		fmt.Printf("Found %d stream(s) to analyze\n\n", len(streams))
+	}
 
 	// Collect all messages for combined analysis
 	var allMessages []MessageData
@@ -204,20 +213,31 @@ func run(cfg Config) error {
 		streamName := stream.CachedInfo().Config.Name
 		msgCount := stream.CachedInfo().State.Msgs
 
-		fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamName, msgCount)
+		if cfg.ShowProgress {
+			fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamName, msgCount)
+		}
 
-		messages, err := FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, startTime, endTime, PrintProgress)
-		ClearProgress()
+		var messages []MessageData
+
+		if cfg.ShowProgress {
+			messages, err = FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, startTime, endTime, PrintProgress)
+			ClearProgress()
+
+		} else {
+			messages, err = FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, startTime, endTime, nil)
+		}
 		if err != nil {
 			fmt.Printf("Warning: failed to fetch messages from %s: %v\n", streamName, err)
 			continue
 		}
 
 		if len(messages) == 0 {
-			if startTime != nil || endTime != nil {
-				fmt.Printf("Stream %s has no messages in the specified time range\n", streamName)
-			} else {
-				fmt.Printf("Stream %s has no messages to analyze\n\n", streamName)
+			if cfg.ShowProgress {
+				if startTime != nil || endTime != nil {
+					fmt.Printf("Stream %s has no messages in the specified time range\n", streamName)
+				} else {
+					fmt.Printf("Stream %s has no messages to analyze\n\n", streamName)
+				}
 			}
 			continue
 		}
@@ -231,16 +251,14 @@ func run(cfg Config) error {
 		allMessages = append(allMessages, messages...)
 	}
 
-	fmt.Println()
+	if cfg.ShowProgress {
+		fmt.Println()
+	}
 
 	// Sort all messages by timestamp for combined analysis
 	sort.Slice(allMessages, func(i, j int) bool {
 		return allMessages[i].Timestamp.Before(allMessages[j].Timestamp)
 	})
-
-	// Print report summary at the start
-	summary := BuildReportSummary(allMessages, len(streams))
-	PrintReportSummary(summary)
 
 	// Build graph options
 	graphOpts := GraphOptions{
@@ -250,12 +268,22 @@ func run(cfg Config) error {
 		MinRatePct:     cfg.MinRatePct,
 	}
 
-	// Always show combined analysis
+	// Build report summary and histogram
+	summary := BuildReportSummary(allMessages, len(streams))
+	var rateHist *RateHistogram
 	if len(allMessages) > 0 {
-		PrintCombinedHeader(len(streams), len(allMessages))
+		rateHist = BuildRateHistogram(allMessages, cfg.RateGranularity)
+	}
 
-		// Build and display combined rate over time
-		rateHist := BuildRateHistogram(allMessages, cfg.RateGranularity)
+	// Print report summary with stats
+	if rateHist != nil {
+		PrintReportSummary(summary, &rateHist.Stats, cfg.PerStream)
+	} else {
+		PrintReportSummary(summary, nil, cfg.PerStream)
+	}
+
+	// Show combined rate over time graph
+	if rateHist != nil {
 		PrintRateHistogram(rateHist, graphOpts)
 
 		// Export to CSV if requested
