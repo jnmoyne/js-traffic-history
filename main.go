@@ -21,7 +21,7 @@ type Config struct {
 	ShowGraph       bool
 	ShowRate        bool
 	ShowThroughput  bool
-	StreamFilter    string
+	StreamNames     []string
 	BatchSize       int
 	Limit           int
 	PerStream       bool
@@ -31,6 +31,7 @@ type Config struct {
 	EndTime         string
 	Since           time.Duration
 	ShowProgress    bool
+	Distribution    bool
 }
 
 func main() {
@@ -69,9 +70,9 @@ func parseFlags() Config {
 		Default("true").
 		BoolVar(&cfg.ShowThroughput)
 
-	app.Flag("stream", "Filter to specific stream").
+	app.Flag("stream", "Analyze specific stream(s) (can be repeated)").
 		Short('s').
-		StringVar(&cfg.StreamFilter)
+		StringsVar(&cfg.StreamNames)
 
 	app.Flag("batch-size", "Messages per batch request").
 		Default("10000").
@@ -105,6 +106,10 @@ func parseFlags() Config {
 	app.Flag("progress", "Show progress during message fetching").
 		Default("true").
 		BoolVar(&cfg.ShowProgress)
+
+	app.Flag("distribution", "Show message distribution over streams").
+		Default("true").
+		BoolVar(&cfg.Distribution)
 
 	app.MustParseWithUsage(os.Args[1:])
 
@@ -144,13 +149,47 @@ func parseTimestamp(s string) (time.Time, error) {
 func run(cfg Config) error {
 	ctx := context.Background()
 
+	nc, js, err := ConnectNATS(cfg.Context)
+	if err != nil {
+		return fmt.Errorf("failed to connect to NATS: %w", err)
+	}
+	defer nc.Close()
+
+	// Get streams with limits retention
+	if cfg.ShowProgress {
+		fmt.Println("Discovering streams with limits retention policy...")
+	}
+
+	streams, err := GetLimitsStreams(ctx, js, cfg.StreamNames, cfg.ShowProgress)
+	if err != nil {
+		return fmt.Errorf("failed to get streams: %w", err)
+	}
+
+	if len(streams) == 0 {
+		fmt.Println("No streams with limits retention policy found.")
+		return nil
+	}
+
+	if cfg.ShowProgress {
+		fmt.Printf("Found %d stream(s) to analyze\n\n", len(streams))
+	}
+
+	// Find max last timestamp across all streams (for --since calculation)
+	var maxLastTimestamp time.Time
+	for _, si := range streams {
+		if si.LastTimestamp.After(maxLastTimestamp) {
+			maxLastTimestamp = si.LastTimestamp
+		}
+	}
+
 	// Parse time filters
 	var startTime, endTime *time.Time
 	if cfg.Since > 0 {
 		if cfg.StartTime != "" {
 			return fmt.Errorf("cannot use both --since and --start")
 		}
-		t := time.Now().Add(-cfg.Since)
+		// Use max last timestamp as reference instead of Now()
+		t := maxLastTimestamp.Add(-cfg.Since)
 		startTime = &t
 	} else if cfg.StartTime != "" {
 		t, err := parseTimestamp(cfg.StartTime)
@@ -179,64 +218,36 @@ func run(cfg Config) error {
 		fmt.Println()
 	}
 
-	nc, js, err := ConnectNATS(cfg.Context)
-	if err != nil {
-		return fmt.Errorf("failed to connect to NATS: %w", err)
-	}
-	defer nc.Close()
-
-	// Get streams with limits retention
-	if cfg.ShowProgress {
-		fmt.Println("Discovering streams with limits retention policy...")
-	}
-
-	streams, err := GetLimitsStreams(ctx, js, cfg.StreamFilter)
-	if err != nil {
-		return fmt.Errorf("failed to get streams: %w", err)
-	}
-
-	if len(streams) == 0 {
-		fmt.Println("No streams with limits retention policy found.")
-		return nil
-	}
-
-	if cfg.ShowProgress {
-		fmt.Printf("Found %d stream(s) to analyze\n\n", len(streams))
-	}
-
 	// Collect all messages for combined analysis
 	var allMessages []MessageData
 
 	// First pass: fetch all messages from all streams
 	streamMessages := make(map[string][]MessageData)
-	for _, stream := range streams {
-		streamName := stream.CachedInfo().Config.Name
-		msgCount := stream.CachedInfo().State.Msgs
-
+	for _, streamInfo := range streams {
 		if cfg.ShowProgress {
-			fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamName, msgCount)
+			fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamInfo.Name, streamInfo.MsgCount)
 		}
 
 		var messages []MessageData
 
 		if cfg.ShowProgress {
-			messages, err = FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, startTime, endTime, PrintProgress)
+			messages, err = FetchStreamMessages(ctx, js, streamInfo, cfg.BatchSize, cfg.Limit, startTime, endTime, PrintProgress)
 			ClearProgress()
 
 		} else {
-			messages, err = FetchStreamMessages(ctx, js, stream, cfg.BatchSize, cfg.Limit, startTime, endTime, nil)
+			messages, err = FetchStreamMessages(ctx, js, streamInfo, cfg.BatchSize, cfg.Limit, startTime, endTime, nil)
 		}
 		if err != nil {
-			fmt.Printf("Warning: failed to fetch messages from %s: %v\n", streamName, err)
+			fmt.Printf("Warning: failed to fetch messages from %s: %v\n", streamInfo.Name, err)
 			continue
 		}
 
 		if len(messages) == 0 {
 			if cfg.ShowProgress {
 				if startTime != nil || endTime != nil {
-					fmt.Printf("Stream %s has no messages in the specified time range\n", streamName)
+					fmt.Printf("Stream %s has no messages in the specified time range\n", streamInfo.Name)
 				} else {
-					fmt.Printf("Stream %s has no messages to analyze\n\n", streamName)
+					fmt.Printf("Stream %s has no messages to analyze\n\n", streamInfo.Name)
 				}
 			}
 			continue
@@ -247,12 +258,12 @@ func run(cfg Config) error {
 			return messages[i].Timestamp.Before(messages[j].Timestamp)
 		})
 
-		streamMessages[streamName] = messages
+		streamMessages[streamInfo.Name] = messages
 		allMessages = append(allMessages, messages...)
 	}
 
 	if cfg.ShowProgress {
-		fmt.Println()
+		fmt.Print("\nAnalysis Results:\n\n")
 	}
 
 	// Sort all messages by timestamp for combined analysis
@@ -277,9 +288,9 @@ func run(cfg Config) error {
 
 	// Print report summary with stats
 	if rateHist != nil {
-		PrintReportSummary(summary, &rateHist.Stats, cfg.PerStream)
+		PrintReportSummary(summary, &rateHist.Stats, cfg.Distribution)
 	} else {
-		PrintReportSummary(summary, nil, cfg.PerStream)
+		PrintReportSummary(summary, nil, cfg.Distribution)
 	}
 
 	// Show combined rate over time graph
@@ -298,14 +309,13 @@ func run(cfg Config) error {
 	// Show per-stream analysis if requested
 	if cfg.PerStream {
 		csvFirstWrite := true
-		for _, stream := range streams {
-			streamName := stream.CachedInfo().Config.Name
-			messages, ok := streamMessages[streamName]
+		for _, streamInfo := range streams {
+			messages, ok := streamMessages[streamInfo.Name]
 			if !ok || len(messages) == 0 {
 				continue
 			}
 
-			PrintStreamHeader(streamName, len(messages))
+			PrintStreamHeader(streamInfo.Name, len(messages))
 
 			// Build and display rate over time
 			rateHist := BuildRateHistogram(messages, cfg.RateGranularity)
@@ -314,12 +324,12 @@ func run(cfg Config) error {
 			// Write per-stream data to CSV if requested
 			if cfg.CSVFile != "" {
 				if csvFirstWrite {
-					if err := WriteCSV(cfg.CSVFile, rateHist, streamName); err != nil {
+					if err := WriteCSV(cfg.CSVFile, rateHist, streamInfo.Name); err != nil {
 						return fmt.Errorf("failed to write CSV: %w", err)
 					}
 					csvFirstWrite = false
 				} else {
-					if err := AppendCSV(cfg.CSVFile, rateHist, streamName); err != nil {
+					if err := AppendCSV(cfg.CSVFile, rateHist, streamInfo.Name); err != nil {
 						return fmt.Errorf("failed to append to CSV: %w", err)
 					}
 				}

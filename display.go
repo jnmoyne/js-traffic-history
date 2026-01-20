@@ -41,7 +41,7 @@ func ClearProgress() {
 }
 
 // PrintReportSummary prints the overall summary at the start of the report
-func PrintReportSummary(summary ReportSummary, stats *RateStatistics, perStream bool) {
+func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distribution bool) {
 	fmt.Println(strings.Repeat("=", headerWidth))
 	fmt.Println("TRAFFIC HISTORY REPORT")
 	fmt.Println(strings.Repeat("=", headerWidth))
@@ -54,59 +54,61 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, perStream 
 	}
 
 	fmt.Println("Overview:")
-	fmt.Printf("  Start Time:       %s\n", summary.StartTime.Format("2006-01-02 15:04:05.000"))
-	fmt.Printf("  End Time:         %s\n", summary.EndTime.Format("2006-01-02 15:04:05.000"))
-	fmt.Printf("  Duration:         %s\n", formatDuration(summary.Duration))
-	fmt.Printf("  Streams:          %d\n", summary.StreamCount)
-	fmt.Printf("  Total Messages:   %d\n", summary.TotalMsgs)
-	fmt.Printf("  Total Data:       %s\n", formatBytes(summary.TotalBytes))
+	fmt.Printf("  Duration:                      %s (%s to %s)\n",
+		formatDuration(summary.Duration),
+		summary.StartTime.Format("2006-01-02 15:04:05"),
+		summary.EndTime.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  Streams:                       %d\n", summary.StreamCount)
+	fmt.Printf("  Total Messages:                %d\n", summary.TotalMsgs)
+	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
+	fmt.Printf("  Total Data:                    %s\n", formatBytes(summary.TotalBytes))
 	if summary.Duration.Seconds() > 0 {
-		fmt.Printf("  Avg Throughput:   %s/s\n", formatBytes(int64(float64(summary.TotalBytes)/summary.Duration.Seconds())))
+		fmt.Printf("  Avg Throughput:                %s/s\n", formatBytes(int64(float64(summary.TotalBytes)/summary.Duration.Seconds())))
 	}
 	fmt.Println()
 
 	// Print detailed stats
 	if stats != nil {
 		fmt.Println("  Message Rate (by stored msgs):")
-		fmt.Printf("    Average:        %.2f msg/s\n", stats.AvgRate)
-		fmt.Printf("    P50:            %.2f msg/s\n", stats.P50Rate)
-		fmt.Printf("    P90:            %.2f msg/s\n", stats.P90Rate)
-		fmt.Printf("    P99:            %.2f msg/s\n", stats.P99Rate)
-		fmt.Printf("    P99.9:          %.2f msg/s\n", stats.P999Rate)
-		fmt.Printf("    Min:            %.2f msg/s\n", stats.MinRate)
-		fmt.Printf("    Max:            %.2f msg/s\n", stats.MaxRate)
-		fmt.Printf("    Std Dev:        %.2f msg/s\n", stats.StdDevRate)
+		fmt.Printf("    Average:                     %.2f msg/s\n", stats.AvgRate)
+		fmt.Printf("    P50:                         %.2f msg/s\n", stats.P50Rate)
+		fmt.Printf("    P90:                         %.2f msg/s\n", stats.P90Rate)
+		fmt.Printf("    P99:                         %.2f msg/s\n", stats.P99Rate)
+		fmt.Printf("    P99.9:                       %.2f msg/s\n", stats.P999Rate)
+		fmt.Printf("    Min:                         %.2f msg/s\n", stats.MinRate)
+		fmt.Printf("    Max:                         %.2f msg/s\n", stats.MaxRate)
+		fmt.Printf("    Std Dev:                     %.2f msg/s\n", stats.StdDevRate)
 		fmt.Println()
 
 		fmt.Println("  Message Rate (by seq nums):")
-		fmt.Printf("    Average:        %.2f msg/s\n", summary.SeqRate)
+		fmt.Printf("    Average:                     %.2f msg/s\n", summary.SeqRate)
 		fmt.Println()
 
 		fmt.Println("  Throughput:")
-		fmt.Printf("    Average:        %s/s\n", formatBytes(int64(stats.AvgThroughput)))
-		fmt.Printf("    P50:            %s/s\n", formatBytes(int64(stats.P50Throughput)))
-		fmt.Printf("    P90:            %s/s\n", formatBytes(int64(stats.P90Throughput)))
-		fmt.Printf("    P99:            %s/s\n", formatBytes(int64(stats.P99Throughput)))
-		fmt.Printf("    P99.9:          %s/s\n", formatBytes(int64(stats.P999Throughput)))
-		fmt.Printf("    Min:            %s/s\n", formatBytes(int64(stats.MinThroughput)))
-		fmt.Printf("    Max:            %s/s\n", formatBytes(int64(stats.MaxThroughput)))
-		fmt.Printf("    Std Dev:        %s/s\n", formatBytes(int64(stats.StdDevTput)))
+		fmt.Printf("    Average:                     %s/s\n", formatBytes(int64(stats.AvgThroughput)))
+		fmt.Printf("    P50:                         %s/s\n", formatBytes(int64(stats.P50Throughput)))
+		fmt.Printf("    P90:                         %s/s\n", formatBytes(int64(stats.P90Throughput)))
+		fmt.Printf("    P99:                         %s/s\n", formatBytes(int64(stats.P99Throughput)))
+		fmt.Printf("    P99.9:                       %s/s\n", formatBytes(int64(stats.P999Throughput)))
+		fmt.Printf("    Min:                         %s/s\n", formatBytes(int64(stats.MinThroughput)))
+		fmt.Printf("    Max:                         %s/s\n", formatBytes(int64(stats.MaxThroughput)))
+		fmt.Printf("    Std Dev:                     %s/s\n", formatBytes(int64(stats.StdDevTput)))
 		fmt.Println()
 
 		fmt.Println("  Message Size:")
-		fmt.Printf("    Average:        %s\n", formatBytes(int64(stats.AvgMsgSize)))
-		fmt.Printf("    P50:            %s\n", formatBytes(int64(stats.P50MsgSize)))
-		fmt.Printf("    P90:            %s\n", formatBytes(int64(stats.P90MsgSize)))
-		fmt.Printf("    P99:            %s\n", formatBytes(int64(stats.P99MsgSize)))
-		fmt.Printf("    P99.9:          %s\n", formatBytes(int64(stats.P999MsgSize)))
-		fmt.Printf("    Min:            %s\n", formatBytes(int64(stats.MinMsgSize)))
-		fmt.Printf("    Max:            %s\n", formatBytes(int64(stats.MaxMsgSize)))
-		fmt.Printf("    Std Dev:        %s\n", formatBytes(int64(stats.StdDevMsgSize)))
+		fmt.Printf("    Average:                     %s\n", formatBytes(int64(stats.AvgMsgSize)))
+		fmt.Printf("    P50:                         %s\n", formatBytes(int64(stats.P50MsgSize)))
+		fmt.Printf("    P90:                         %s\n", formatBytes(int64(stats.P90MsgSize)))
+		fmt.Printf("    P99:                         %s\n", formatBytes(int64(stats.P99MsgSize)))
+		fmt.Printf("    P99.9:                       %s\n", formatBytes(int64(stats.P999MsgSize)))
+		fmt.Printf("    Min:                         %s\n", formatBytes(int64(stats.MinMsgSize)))
+		fmt.Printf("    Max:                         %s\n", formatBytes(int64(stats.MaxMsgSize)))
+		fmt.Printf("    Std Dev:                     %s\n", formatBytes(int64(stats.StdDevMsgSize)))
 		fmt.Println()
 	}
 
 	// Print stream breakdown as aligned table
-	if len(summary.Streams) > 0 && perStream {
+	if len(summary.Streams) > 0 && distribution {
 		// Find max stream name length for alignment
 		maxNameLen := 6 // minimum "Stream" header width
 		for _, s := range summary.Streams {
@@ -116,7 +118,7 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, perStream 
 		}
 
 		// Table 1: Streams by Stored Message Count
-		fmt.Println("Streams by Stored Message Count:")
+		fmt.Println("Streams Distribution by Stored Message Count:")
 		fmt.Printf("  %-*s | %10s | %10s | %s\n", maxNameLen, "Stream", "Messages", "Data", "Graph")
 		fmt.Printf("  %s-+-%s-+-%s-+-%s\n",
 			strings.Repeat("-", maxNameLen),
@@ -145,7 +147,7 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, perStream 
 			return cmp.Compare(seqCountB, seqCountA) // descending order
 		})
 
-		fmt.Println("Streams by Sequence Number Count:")
+		fmt.Println("Streams Distribution by Sequence Number Count:")
 		fmt.Printf("  %-*s | %10s | %12s | %s\n", maxNameLen, "Stream", "Seq Count", "Avg Rate", "Graph")
 		fmt.Printf("  %s-+-%s-+-%s-+-%s\n",
 			strings.Repeat("-", maxNameLen),
@@ -352,7 +354,10 @@ func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 	fmt.Printf("  Total Messages:                %s\n", humanize.Comma(int64(stats.TotalMessages)))
 	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
 	fmt.Printf("  Total Data:                    %s\n", formatBytes(stats.TotalBytes))
-	fmt.Printf("  Time Span:                     %s\n", formatDuration(stats.TotalDuration))
+	fmt.Printf("  Time Span:                     %s (%s to %s)\n",
+		formatDuration(stats.TotalDuration),
+		stats.StartTime.Format("2006-01-02 15:04:05"),
+		stats.EndTime.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Total Buckets:                 %s (active: %s, %.1f%%)\n",
 		humanize.Comma(int64(stats.TotalBuckets)),
 		humanize.Comma(int64(stats.ActiveBuckets)),

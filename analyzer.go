@@ -22,17 +22,18 @@ type ProgressFunc func(current, total int)
 // FetchStreamMessages retrieves messages from a stream using jetstreamext.GetBatch
 // If startTime is specified, fetching starts from that time. If endTime is specified,
 // fetching stops when messages exceed that time.
-func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, batchSize, limit int, startTime, endTime *time.Time, progress ProgressFunc) ([]MessageData, error) {
-	info := stream.CachedInfo()
-	streamName := info.Config.Name
-	firstSeq := info.State.FirstSeq
+// Uses the pre-recorded sequence bounds from StreamInfo for efficient fetching.
+func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, streamInfo StreamInfo, batchSize, limit int, startTime, endTime *time.Time, progress ProgressFunc) ([]MessageData, error) {
+	streamName := streamInfo.Name
+	firstSeq := streamInfo.FirstSeq
+	lastSeq := streamInfo.LastSeq
 
-	if info.State.Msgs == 0 {
+	if streamInfo.MsgCount == 0 {
 		return nil, nil
 	}
 
 	// Determine how many messages to fetch (this is an upper bound estimate)
-	totalToFetch := int(info.State.Msgs)
+	totalToFetch := int(streamInfo.MsgCount)
 	if limit > 0 && limit < totalToFetch {
 		totalToFetch = limit
 	}
@@ -42,6 +43,11 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 	useStartTime := startTime != nil // Use start time for the first batch only
 
 	for limit == 0 || len(messages) < limit {
+		// Stop if we've passed the recorded last sequence
+		if currentSeq > lastSeq {
+			break
+		}
+
 		// Calculate fetch size
 		fetchSize := batchSize
 		if limit > 0 {
@@ -67,7 +73,7 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 		}
 
 		batchCount := 0
-		var lastSeq uint64
+		var fetchedSeq uint64
 		hitEndTime := false
 		for msg, err := range msgIter {
 			if err != nil {
@@ -81,13 +87,18 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 				break
 			}
 
+			// Stop if we've passed the recorded last sequence
+			if msg.Sequence > lastSeq {
+				break
+			}
+
 			messages = append(messages, MessageData{
 				StreamName: streamName,
 				Sequence:   msg.Sequence,
 				Timestamp:  msg.Time,
 				Size:       len(msg.Data),
 			})
-			lastSeq = msg.Sequence
+			fetchedSeq = msg.Sequence
 			batchCount++
 
 			if progress != nil {
@@ -106,7 +117,7 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, stream jet
 		}
 
 		// Move to next sequence after the last fetched message
-		currentSeq = lastSeq + 1
+		currentSeq = fetchedSeq + 1
 	}
 
 	// Trim to limit if needed

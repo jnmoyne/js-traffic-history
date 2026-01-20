@@ -20,6 +20,8 @@ type RateBucket struct {
 type RateStatistics struct {
 	TotalMessages  int
 	TotalBytes     int64
+	StartTime      time.Time
+	EndTime        time.Time
 	TotalDuration  time.Duration
 	AvgRate        float64
 	P50Rate        float64
@@ -223,13 +225,13 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 		Granularity: granularity,
 	}
 
-	hist.Stats = calculateRateStats(buckets, len(messages), totalBytes, endTime.Sub(startTime), msgSizes, firstSeq, lastSeq)
+	hist.Stats = calculateRateStats(buckets, len(messages), totalBytes, startTime, endTime, msgSizes, firstSeq, lastSeq)
 
 	return hist
 }
 
 // calculateRateStats computes statistics from rate buckets and message sizes
-func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int64, totalDuration time.Duration, msgSizes []int, firstSeq, lastSeq uint64) RateStatistics {
+func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int64, startTime, endTime time.Time, msgSizes []int, firstSeq, lastSeq uint64) RateStatistics {
 	if len(buckets) == 0 {
 		return RateStatistics{}
 	}
@@ -237,16 +239,18 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 	stats := RateStatistics{
 		TotalMessages: totalMessages,
 		TotalBytes:    totalBytes,
-		TotalDuration: totalDuration,
+		StartTime:     startTime,
+		EndTime:       endTime,
+		TotalDuration: endTime.Sub(startTime),
 		TotalBuckets:  len(buckets),
 		FirstSeq:      firstSeq,
 		LastSeq:       lastSeq,
 	}
 
 	// Calculate sequence-based rate
-	if totalDuration.Seconds() > 0 {
+	if stats.TotalDuration.Seconds() > 0 {
 		seqCount := lastSeq - firstSeq + 1
-		stats.SeqRate = float64(seqCount) / totalDuration.Seconds()
+		stats.SeqRate = float64(seqCount) / stats.TotalDuration.Seconds()
 	}
 
 	// Collect rates and throughputs for percentile calculation
