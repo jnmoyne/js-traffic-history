@@ -10,9 +10,11 @@ import (
 type RateBucket struct {
 	Start      time.Time
 	End        time.Time
-	Count      int
+	Count      int // actual stored messages in this bucket
+	SeqCount   int // count based on sequence numbers (includes deleted)
 	Bytes      int64
-	Rate       float64 // messages per second
+	Rate       float64 // messages per second (stored)
+	SeqRate    float64 // messages per second (by sequence numbers, with deletes interpolated)
 	Throughput float64 // bytes per second
 }
 
@@ -31,6 +33,14 @@ type RateStatistics struct {
 	MinRate        float64
 	MaxRate        float64
 	StdDevRate     float64
+	AvgSeqRate     float64 // average rate by sequence numbers
+	P50SeqRate     float64
+	P90SeqRate     float64
+	P99SeqRate     float64
+	P999SeqRate    float64
+	MinSeqRate     float64
+	MaxSeqRate     float64
+	StdDevSeqRate  float64
 	AvgThroughput  float64 // bytes per second
 	P50Throughput  float64
 	P90Throughput  float64
@@ -49,7 +59,7 @@ type RateStatistics struct {
 	StdDevMsgSize  float64
 	FirstSeq       uint64  // first sequence number
 	LastSeq        uint64  // last sequence number
-	SeqRate        float64 // rate based on sequence numbers (msgs recorded/s)
+	SeqRate        float64 // overall rate based on sequence numbers (msgs recorded/s)
 	ActiveBuckets  int     // buckets with at least one message
 	TotalBuckets   int
 }
@@ -194,15 +204,66 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 			bucketIdx = 0
 		}
 		buckets[bucketIdx].Count++
+		buckets[bucketIdx].SeqCount++ // Each stored message counts as 1 in sequence count too
 		buckets[bucketIdx].Bytes += int64(msg.Size)
 		totalBytes += int64(msg.Size)
 		msgSizes[i] = msg.Size
+	}
+
+	// Interpolate deleted messages: distribute gaps between consecutive messages
+	// across the buckets spanning their timestamps
+	for i := 1; i < len(messages); i++ {
+		prevMsg := messages[i-1]
+		currMsg := messages[i]
+
+		// Calculate how many messages were deleted between these two
+		gap := int(currMsg.Sequence - prevMsg.Sequence - 1)
+		if gap <= 0 {
+			continue
+		}
+
+		// Find the bucket indices for the two messages
+		prevBucketIdx := int(prevMsg.Timestamp.Sub(startTime) / granularity)
+		currBucketIdx := int(currMsg.Timestamp.Sub(startTime) / granularity)
+
+		// Clamp to valid range
+		if prevBucketIdx < 0 {
+			prevBucketIdx = 0
+		}
+		if prevBucketIdx >= len(buckets) {
+			prevBucketIdx = len(buckets) - 1
+		}
+		if currBucketIdx < 0 {
+			currBucketIdx = 0
+		}
+		if currBucketIdx >= len(buckets) {
+			currBucketIdx = len(buckets) - 1
+		}
+
+		// Distribute deleted messages across buckets from prevBucketIdx to currBucketIdx
+		bucketSpan := currBucketIdx - prevBucketIdx + 1
+		if bucketSpan <= 0 {
+			bucketSpan = 1
+		}
+
+		// Distribute evenly, with remainder going to earlier buckets
+		perBucket := gap / bucketSpan
+		remainder := gap % bucketSpan
+
+		for b := prevBucketIdx; b <= currBucketIdx; b++ {
+			buckets[b].SeqCount += perBucket
+			if remainder > 0 {
+				buckets[b].SeqCount++
+				remainder--
+			}
+		}
 	}
 
 	// Calculate rates and throughput
 	granularitySecs := granularity.Seconds()
 	for i := range buckets {
 		buckets[i].Rate = float64(buckets[i].Count) / granularitySecs
+		buckets[i].SeqRate = float64(buckets[i].SeqCount) / granularitySecs
 		buckets[i].Throughput = float64(buckets[i].Bytes) / granularitySecs
 	}
 
@@ -239,19 +300,24 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 		stats.SeqRate = float64(seqCount) / stats.TotalDuration.Seconds()
 	}
 
-	// Collect rates and throughputs for percentile calculation
+	// Collect rates, seqRates, and throughputs for percentile calculation
 	rates := make([]float64, len(buckets))
+	seqRates := make([]float64, len(buckets))
 	throughputs := make([]float64, len(buckets))
-	var sumRate, sumTput float64
+	var sumRate, sumSeqRate, sumTput float64
 	stats.MinRate = buckets[0].Rate
 	stats.MaxRate = buckets[0].Rate
+	stats.MinSeqRate = buckets[0].SeqRate
+	stats.MaxSeqRate = buckets[0].SeqRate
 	stats.MinThroughput = buckets[0].Throughput
 	stats.MaxThroughput = buckets[0].Throughput
 
 	for i, bucket := range buckets {
 		rates[i] = bucket.Rate
+		seqRates[i] = bucket.SeqRate
 		throughputs[i] = bucket.Throughput
 		sumRate += bucket.Rate
+		sumSeqRate += bucket.SeqRate
 		sumTput += bucket.Throughput
 
 		if bucket.Rate < stats.MinRate {
@@ -259,6 +325,12 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 		}
 		if bucket.Rate > stats.MaxRate {
 			stats.MaxRate = bucket.Rate
+		}
+		if bucket.SeqRate < stats.MinSeqRate {
+			stats.MinSeqRate = bucket.SeqRate
+		}
+		if bucket.SeqRate > stats.MaxSeqRate {
+			stats.MaxSeqRate = bucket.SeqRate
 		}
 		if bucket.Throughput < stats.MinThroughput {
 			stats.MinThroughput = bucket.Throughput
@@ -271,12 +343,14 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 		}
 	}
 
-	// Average rate and throughput
+	// Average rate, seqRate, and throughput
 	stats.AvgRate = sumRate / float64(len(buckets))
+	stats.AvgSeqRate = sumSeqRate / float64(len(buckets))
 	stats.AvgThroughput = sumTput / float64(len(buckets))
 
 	// Sort for percentiles
 	sort.Float64s(rates)
+	sort.Float64s(seqRates)
 	sort.Float64s(throughputs)
 
 	// Calculate rate percentiles
@@ -284,6 +358,12 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 	stats.P90Rate = percentileFloat64(rates, 0.90)
 	stats.P99Rate = percentileFloat64(rates, 0.99)
 	stats.P999Rate = percentileFloat64(rates, 0.999)
+
+	// Calculate sequence-based rate percentiles
+	stats.P50SeqRate = percentileFloat64(seqRates, 0.50)
+	stats.P90SeqRate = percentileFloat64(seqRates, 0.90)
+	stats.P99SeqRate = percentileFloat64(seqRates, 0.99)
+	stats.P999SeqRate = percentileFloat64(seqRates, 0.999)
 
 	// Calculate throughput percentiles
 	stats.P50Throughput = percentileFloat64(throughputs, 0.50)
@@ -298,6 +378,14 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 		sumSquaredDiff += diff * diff
 	}
 	stats.StdDevRate = math.Sqrt(sumSquaredDiff / float64(len(rates)))
+
+	// Standard deviation for sequence-based rate
+	sumSquaredDiff = 0
+	for _, seqRate := range seqRates {
+		diff := seqRate - stats.AvgSeqRate
+		sumSquaredDiff += diff * diff
+	}
+	stats.StdDevSeqRate = math.Sqrt(sumSquaredDiff / float64(len(seqRates)))
 
 	// Standard deviation for throughput
 	sumSquaredDiff = 0

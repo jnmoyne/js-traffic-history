@@ -84,8 +84,15 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 		fmt.Printf("    Std Dev:                     %.2f msg/s\n", stats.StdDevRate)
 		fmt.Println()
 
-		fmt.Println("  Message Rate (by seq nums):")
-		fmt.Printf("    Average:                     %.2f msg/s\n", summary.SeqRate)
+		fmt.Println("  Message Rate (by sequence numbers with deletes interpolated):")
+		fmt.Printf("    Average:                     %.2f msg/s\n", stats.AvgSeqRate)
+		fmt.Printf("    P50:                         %.2f msg/s\n", stats.P50SeqRate)
+		fmt.Printf("    P90:                         %.2f msg/s\n", stats.P90SeqRate)
+		fmt.Printf("    P99:                         %.2f msg/s\n", stats.P99SeqRate)
+		fmt.Printf("    P99.9:                       %.2f msg/s\n", stats.P999SeqRate)
+		fmt.Printf("    Min:                         %.2f msg/s\n", stats.MinSeqRate)
+		fmt.Printf("    Max:                         %.2f msg/s\n", stats.MaxSeqRate)
+		fmt.Printf("    Std Dev:                     %.2f msg/s\n", stats.StdDevSeqRate)
 		fmt.Println()
 
 		fmt.Println("  Throughput:")
@@ -380,8 +387,15 @@ func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 		fmt.Printf("    Std Dev:        %.2f msg/s\n", stats.StdDevRate)
 		fmt.Println()
 
-		fmt.Println("  Message Storage Rate by sequence numbers:")
-		fmt.Printf("    Average:        %.2f msg/s\n", stats.SeqRate)
+		fmt.Println("  Message Storage Rate (by sequence numbers, with deletes interpolated):")
+		fmt.Printf("    Average:        %.2f msg/s\n", stats.AvgSeqRate)
+		fmt.Printf("    P50:            %.2f msg/s\n", stats.P50SeqRate)
+		fmt.Printf("    P90:            %.2f msg/s\n", stats.P90SeqRate)
+		fmt.Printf("    P99:            %.2f msg/s\n", stats.P99SeqRate)
+		fmt.Printf("    P99.9:          %.2f msg/s\n", stats.P999SeqRate)
+		fmt.Printf("    Min:            %.2f msg/s\n", stats.MinSeqRate)
+		fmt.Printf("    Max:            %.2f msg/s\n", stats.MaxSeqRate)
+		fmt.Printf("    Std Dev:        %.2f msg/s\n", stats.StdDevSeqRate)
 		fmt.Println()
 	}
 
