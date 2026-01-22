@@ -225,7 +225,7 @@ func run(cfg Config) error {
 	streamMessages := make(map[string][]MessageData)
 	for _, streamInfo := range streams {
 		if cfg.ShowProgress {
-			fmt.Printf("Fetching messages from stream: %s (%d messages)\n", streamInfo.Name, streamInfo.MsgCount)
+			fmt.Printf("Fetching messages from stream: %s (up to %d messages)\n", streamInfo.Name, streamInfo.MsgCount)
 		}
 
 		var messages []MessageData
@@ -291,19 +291,6 @@ func run(cfg Config) error {
 		PrintReportSummary(summary, &rateHist.Stats, cfg.Distribution)
 	} else {
 		PrintReportSummary(summary, nil, cfg.Distribution)
-	}
-
-	// Show combined rate over time graph
-	if rateHist != nil {
-		PrintRateHistogram(rateHist, graphOpts)
-
-		// Export to CSV if requested
-		if cfg.CSVFile != "" && !cfg.PerStream {
-			if err := WriteCSV(cfg.CSVFile, rateHist, "combined"); err != nil {
-				return fmt.Errorf("failed to write CSV: %w", err)
-			}
-			fmt.Printf("CSV data exported to %s\n", cfg.CSVFile)
-		}
 	}
 
 	// Show per-stream analysis if requested

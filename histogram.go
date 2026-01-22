@@ -79,7 +79,7 @@ type ReportSummary struct {
 	StreamCount int
 	TotalMsgs   int
 	TotalBytes  int64
-	TotalSeqs   uint64  // sum of (lastSeq - firstSeq + 1) across all streams
+	TotalSeqs   uint64  // sum of (lastSeq - firstSeq) across all streams
 	SeqRate     float64 // rate based on sequence numbers (msgs recorded/s)
 	Streams     []StreamSummary
 }
@@ -131,12 +131,12 @@ func BuildReportSummary(messages []MessageData, streamCount int) ReportSummary {
 	for _, ss := range streamStats {
 		// Calculate per-stream sequence rate
 		if summary.Duration.Seconds() > 0 {
-			seqCount := ss.LastSeq - ss.FirstSeq + 1
+			seqCount := ss.LastSeq - ss.FirstSeq
 			ss.SeqRate = float64(seqCount) / summary.Duration.Seconds()
 		}
 
 		// Accumulate total sequences across streams
-		summary.TotalSeqs += ss.LastSeq - ss.FirstSeq + 1
+		summary.TotalSeqs += ss.LastSeq - ss.FirstSeq
 
 		summary.Streams = append(summary.Streams, *ss)
 	}
@@ -162,23 +162,9 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 
 	// Find time range and sequence range
 	minTime := messages[0].Timestamp
-	maxTime := messages[0].Timestamp
+	maxTime := messages[len(messages)-1].Timestamp
 	firstSeq := messages[0].Sequence
-	lastSeq := messages[0].Sequence
-	for _, msg := range messages {
-		if msg.Timestamp.Before(minTime) {
-			minTime = msg.Timestamp
-		}
-		if msg.Timestamp.After(maxTime) {
-			maxTime = msg.Timestamp
-		}
-		if msg.Sequence < firstSeq {
-			firstSeq = msg.Sequence
-		}
-		if msg.Sequence > lastSeq {
-			lastSeq = msg.Sequence
-		}
-	}
+	lastSeq := messages[len(messages)-1].Sequence
 
 	// Align to granularity boundaries
 	startTime := minTime.Truncate(granularity)
@@ -249,7 +235,7 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 
 	// Calculate sequence-based rate
 	if stats.TotalDuration.Seconds() > 0 {
-		seqCount := lastSeq - firstSeq + 1
+		seqCount := lastSeq - firstSeq
 		stats.SeqRate = float64(seqCount) / stats.TotalDuration.Seconds()
 	}
 

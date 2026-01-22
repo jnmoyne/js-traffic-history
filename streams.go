@@ -46,9 +46,6 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilters
 	// Helper to add a stream with its metadata
 	addStream := func(stream jetstream.Stream) error {
 		info := stream.CachedInfo()
-		if info.Config.Retention != jetstream.LimitsPolicy {
-			return fmt.Errorf("stream %q has %s retention policy, not limits", info.Config.Name, retentionPolicyName(info.Config.Retention))
-		}
 
 		if info.State.Msgs == 0 {
 			// Skip empty streams

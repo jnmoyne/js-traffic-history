@@ -27,7 +27,6 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, streamInfo
 	streamName := streamInfo.Name
 	firstSeq := streamInfo.FirstSeq
 	lastSeq := streamInfo.LastSeq
-
 	if streamInfo.MsgCount == 0 {
 		return nil, nil
 	}
@@ -74,7 +73,7 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, streamInfo
 
 		batchCount := 0
 		var fetchedSeq uint64
-		hitEndTime := false
+		hitEnd := false
 		for msg, err := range msgIter {
 			if err != nil {
 				// Skip errors (message might have been deleted)
@@ -83,12 +82,13 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, streamInfo
 
 			// Check if message is past end time
 			if endTime != nil && msg.Time.After(*endTime) {
-				hitEndTime = true
+				hitEnd = true
 				break
 			}
 
 			// Stop if we've passed the recorded last sequence
 			if msg.Sequence > lastSeq {
+				hitEnd = true
 				break
 			}
 
@@ -112,7 +112,7 @@ func FetchStreamMessages(ctx context.Context, js jetstream.JetStream, streamInfo
 		}
 
 		// Stop if we hit end time or no messages were fetched
-		if hitEndTime || batchCount == 0 {
+		if hitEnd || batchCount == 0 {
 			break
 		}
 

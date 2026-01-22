@@ -60,7 +60,11 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 		summary.EndTime.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Streams:                       %d\n", summary.StreamCount)
 	fmt.Printf("  Total Messages:                %d\n", summary.TotalMsgs)
-	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
+
+	if stats != nil {
+		fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq)))
+	}
+
 	fmt.Printf("  Total Data:                    %s\n", formatBytes(summary.TotalBytes))
 	if summary.Duration.Seconds() > 0 {
 		fmt.Printf("  Avg Throughput:                %s/s\n", formatBytes(int64(float64(summary.TotalBytes)/summary.Duration.Seconds())))
@@ -142,8 +146,8 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 		streamsBySeq := make([]StreamSummary, len(summary.Streams))
 		copy(streamsBySeq, summary.Streams)
 		slices.SortFunc(streamsBySeq, func(a, b StreamSummary) int {
-			seqCountA := a.LastSeq - a.FirstSeq + 1
-			seqCountB := b.LastSeq - b.FirstSeq + 1
+			seqCountA := a.LastSeq - a.FirstSeq
+			seqCountB := b.LastSeq - b.FirstSeq
 			return cmp.Compare(seqCountB, seqCountA) // descending order
 		})
 
@@ -157,7 +161,7 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 
 		maxSeqCount := streamsBySeq[0].LastSeq - streamsBySeq[0].FirstSeq + 1
 		for _, s := range streamsBySeq {
-			seqCount := s.LastSeq - s.FirstSeq + 1
+			seqCount := s.LastSeq - s.FirstSeq
 			barLen := int((float64(seqCount) / float64(maxSeqCount)) * float64(graphWidth))
 			if barLen < 1 && seqCount > 0 {
 				barLen = 1
@@ -352,7 +356,7 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 	fmt.Println("Statistics:")
 	fmt.Printf("  Total Messages:                %s\n", humanize.Comma(int64(stats.TotalMessages)))
-	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
+	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq)))
 	fmt.Printf("  Total Data:                    %s\n", formatBytes(stats.TotalBytes))
 	fmt.Printf("  Time Span:                     %s (%s to %s)\n",
 		formatDuration(stats.TotalDuration),
