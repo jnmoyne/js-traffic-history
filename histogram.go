@@ -14,7 +14,7 @@ type RateBucket struct {
 	SeqCount   int // count based on sequence numbers (includes deleted)
 	Bytes      int64
 	Rate       float64 // messages per second (stored)
-	SeqRate    float64 // messages per second (by sequence numbers, with deletes interpolated)
+	SeqRate    float64 // messages per second (per sequence numbers, with deletes interpolated)
 	Throughput float64 // bytes per second
 }
 
@@ -33,7 +33,7 @@ type RateStatistics struct {
 	MinRate        float64
 	MaxRate        float64
 	StdDevRate     float64
-	AvgSeqRate     float64 // average rate by sequence numbers
+	AvgSeqRate     float64 // average rate per sequence numbers
 	P50SeqRate     float64
 	P90SeqRate     float64
 	P99SeqRate     float64

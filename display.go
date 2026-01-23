@@ -62,7 +62,7 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 	fmt.Printf("  Total Messages:                %d\n", summary.TotalMsgs)
 
 	if stats != nil {
-		fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq)))
+		fmt.Printf("  Total Messages (per seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
 	}
 
 	fmt.Printf("  Total Data:                    %s\n", formatBytes(summary.TotalBytes))
@@ -84,7 +84,7 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 		fmt.Printf("    Std Dev:                     %.2f msg/s\n", stats.StdDevRate)
 		fmt.Println()
 
-		fmt.Println("  Message Rate (by sequence numbers with deletes interpolated):")
+		fmt.Println("  Message Rate (per sequence numbers with deletes interpolated):")
 		fmt.Printf("    Average:                     %.2f msg/s\n", stats.AvgSeqRate)
 		fmt.Printf("    P50:                         %.2f msg/s\n", stats.P50SeqRate)
 		fmt.Printf("    P90:                         %.2f msg/s\n", stats.P90SeqRate)
@@ -158,7 +158,7 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 			return cmp.Compare(seqCountB, seqCountA) // descending order
 		})
 
-		fmt.Println("Streams Distribution by Sequence Number Count:")
+		fmt.Println("Streams Distribution by per Sequence Number Count:")
 		fmt.Printf("  %-*s | %10s | %12s | %s\n", maxNameLen, "Stream", "Seq Count", "Avg Rate", "Graph")
 		fmt.Printf("  %s-+-%s-+-%s-+-%s\n",
 			strings.Repeat("-", maxNameLen),
@@ -208,10 +208,11 @@ func PrintRateHistogram(hist *RateHistogram, opts GraphOptions) {
 	}
 
 	if opts.ShowGraph {
-		if opts.ShowRate {
+		if opts.ShowRate && opts.ShowThroughput {
+			printCombinedGraph(hist, opts.MinRatePct)
+		} else if opts.ShowRate {
 			printRateGraph(hist, opts.MinRatePct)
-		}
-		if opts.ShowThroughput {
+		} else if opts.ShowThroughput {
 			printThroughputGraph(hist, opts.MinRatePct)
 		}
 	}
@@ -306,6 +307,124 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 	fmt.Println()
 }
 
+const combinedGraphWidth = 25 // Smaller width for combined graphs
+
+// printCombinedGraph prints rate and throughput on the same line
+func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
+	if len(hist.Buckets) == 0 {
+		return
+	}
+
+	// Find max SeqRate and max Throughput for scaling
+	maxSeqRate := 0.0
+	maxTput := 0.0
+	for _, bucket := range hist.Buckets {
+		if bucket.SeqRate > maxSeqRate {
+			maxSeqRate = bucket.SeqRate
+		}
+		if bucket.Throughput > maxTput {
+			maxTput = bucket.Throughput
+		}
+	}
+
+	if maxSeqRate == 0 && maxTput == 0 {
+		fmt.Println("  No messages in any bucket")
+		fmt.Println()
+		return
+	}
+
+	// Calculate thresholds
+	rateThreshold := maxSeqRate * minRatePct / 100.0
+	tputThreshold := maxTput * minRatePct / 100.0
+
+	fmt.Printf("  Rate: 0-%.1f msg/s (█=stored ░=deleted) | Throughput: 0-%s/s | hiding < %.1f%%\n",
+		maxSeqRate, formatBytes(int64(maxTput)), minRatePct)
+	fmt.Printf("  %-20s | %6s %6s | %-*s | %10s | %s\n",
+		"Time", "Stored", "Del", combinedGraphWidth, "Rate Graph", "Throughput", "Tput Graph")
+	fmt.Printf("  %s-+-%s-%s-+-%s-+-%s-+-%s\n",
+		strings.Repeat("-", 20),
+		strings.Repeat("-", 6),
+		strings.Repeat("-", 6),
+		strings.Repeat("-", combinedGraphWidth),
+		strings.Repeat("-", 10),
+		strings.Repeat("-", combinedGraphWidth))
+
+	// Track skipped bucket ranges
+	var skipStart *time.Time
+	var skipEnd time.Time
+	skipCount := 0
+
+	printSkipped := func() {
+		if skipCount > 0 && skipStart != nil {
+			startStr := skipStart.Format("2006-01-02 15:04:05")
+			endStr := skipEnd.Format("2006-01-02 15:04:05")
+			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets below threshold ...\n",
+				startStr, "->"+endStr, combinedGraphWidth, "", "", skipCount)
+			skipCount = 0
+			skipStart = nil
+		}
+	}
+
+	for _, bucket := range hist.Buckets {
+		// Skip if both rate and throughput are below threshold
+		if bucket.SeqRate < rateThreshold && bucket.Throughput < tputThreshold {
+			if skipStart == nil {
+				t := bucket.Start
+				skipStart = &t
+			}
+			skipEnd = bucket.Start
+			skipCount++
+			continue
+		}
+
+		// Print any accumulated skipped range
+		printSkipped()
+
+		// Calculate rate bar lengths for stored and deleted portions
+		var rateBar string
+		if maxSeqRate > 0 {
+			totalBarLen := int((bucket.SeqRate / maxSeqRate) * float64(combinedGraphWidth))
+			storedBarLen := int((bucket.Rate / maxSeqRate) * float64(combinedGraphWidth))
+			if totalBarLen < 0 {
+				totalBarLen = 0
+			}
+			if storedBarLen < 0 {
+				storedBarLen = 0
+			}
+			if storedBarLen > totalBarLen {
+				storedBarLen = totalBarLen
+			}
+			deletedBarLen := totalBarLen - storedBarLen
+			rateBar = strings.Repeat("█", storedBarLen) + strings.Repeat("░", deletedBarLen)
+		}
+		// Pad rate bar to fixed width
+		rateBar = fmt.Sprintf("%-*s", combinedGraphWidth, rateBar)
+
+		// Calculate throughput bar
+		var tputBar string
+		if maxTput > 0 {
+			tputBarLen := int((bucket.Throughput / maxTput) * float64(combinedGraphWidth))
+			if tputBarLen < 0 {
+				tputBarLen = 0
+			}
+			tputBar = strings.Repeat("▓", tputBarLen)
+		}
+
+		// Calculate deleted count for display
+		deletedCount := bucket.SeqCount - bucket.Count
+
+		timeStr := bucket.Start.Format("2006-01-02 15:04:05")
+		fmt.Printf("  %-20s | %6d %6d | %s | %10s | %s\n",
+			timeStr, bucket.Count, deletedCount, rateBar,
+			formatBytesPerSec(bucket.Throughput), tputBar)
+	}
+
+	// Print any remaining skipped range at the end
+	printSkipped()
+
+	fmt.Println()
+}
+
 // printThroughputGraph prints a time-series graph showing throughput per bucket
 func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 	if len(hist.Buckets) == 0 {
@@ -379,7 +498,7 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 	fmt.Println("Statistics:")
 	fmt.Printf("  Total Messages:                %s\n", humanize.Comma(int64(stats.TotalMessages)))
-	fmt.Printf("  Total Messages (by seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq)))
+	fmt.Printf("  Total Messages (per seq nums):  %s\n", humanize.Comma(int64(stats.LastSeq-stats.FirstSeq+1)))
 	fmt.Printf("  Total Data:                    %s\n", formatBytes(stats.TotalBytes))
 	fmt.Printf("  Time Span:                     %s (%s to %s)\n",
 		formatDuration(stats.TotalDuration),
@@ -403,7 +522,7 @@ func printRateStats(stats RateStatistics, showRate, showThroughput bool) {
 		fmt.Printf("    Std Dev:        %.2f msg/s\n", stats.StdDevRate)
 		fmt.Println()
 
-		fmt.Println("  Message Storage Rate (by sequence numbers, with deletes interpolated):")
+		fmt.Println("  Message Storage Rate (per sequence numbers, with deletes interpolated):")
 		fmt.Printf("    Average:        %.2f msg/s\n", stats.AvgSeqRate)
 		fmt.Printf("    P50:            %.2f msg/s\n", stats.P50SeqRate)
 		fmt.Printf("    P90:            %.2f msg/s\n", stats.P90SeqRate)

@@ -1,65 +1,40 @@
 # js-traffic-history
-Tool to create statistics and a history of NATS JetStream message traffic from the data in the limits streams (or just for a specific stream).
+Tool to create statistics and a history of NATS JetStream message traffic from the data in the limits streams (or just for a specific stream) for an account.
 
-Sample basic output:
+## How it works
+
+The tool can only work on the data that is still stored in the streams at the time you run it, meaning it doesn't have detailed info about deleted messages. It does however try to remediate some of that by interpolating 'interior deletes' from the gaps in sequence numbers.
+
+
+
+## Usage
 
 ```
-Connecting to NATS...
-Discovering streams with limits retention policy...
-Found 1 stream(s) to analyze
+usage: js-traffic-history [<flags>]
 
-Fetching messages from stream: benchstream (207108 messages)
-                                                            
-======================================================================
-TRAFFIC HISTORY REPORT
-======================================================================
+Analyze stored message rates across NATS JetStream for accessible streams in the account (with limits retention policy)
 
-Overview:
-  Start Time:       2026-01-17 13:29:21.538
-  End Time:         2026-01-18 00:19:07.863
-  Duration:         10h49m46.3s
-  Streams:          1
-  Total Messages:   207108
-  Total Data:       25.3 MB
-  Avg Throughput:   679 B/s
-  Avg Rate:         5.31 msg/s
-
-Streams by Message Count:
-  benchstream            207108 msgs    25.3 MB | ████████████████████████████████████████
-
-----------------------------------------------------------------------
-COMBINED (1 streams, 207108 total messages)
-----------------------------------------------------------------------
-
--- Message Rate Over Time (granularity: 1.00s) ----------------------
-
-Statistics:
-  Total Messages:   207108
-  Total Data:       25.3 MB
-  Time Span:        10h49m47.0s
-  Total Buckets:    38987 (active: 184, 0.5%)
-
-  Message Rate:
-    Average:        5.31 msg/s
-    P50:            0.00 msg/s
-    P90:            0.00 msg/s
-    P99:            0.00 msg/s
-    P99.9:          47.00 msg/s
-    Min:            0.00 msg/s
-    Max:            13530.00 msg/s
-    Std Dev:        234.96 msg/s
-
-  Throughput:
-    Average:        679 B/s
-    P50:            0 B/s
-    P90:            0 B/s
-    P99:            0 B/s
-    P99.9:          5.9 KB/s
-    Min:            0 B/s
-    Max:            1.7 MB/s
-    Std Dev:        29.4 KB/s
+Global Flags:
+      --help               Show context-sensitive help
+      --version            Show application version.
+  -c, --context=CONTEXT    NATS context name (uses default if empty)
+      --granularity=1s     Time bucket size for rate calculation
+  -g, --[no-]graph         Display ASCII graph
+      --[no-]rate          Show message rate graph and stats
+      --[no-]throughput    Show throughput graph and stats
+  -s, --stream=STREAM ...  Analyze specific stream(s) (can be repeated)
+      --batch-size=10000   Messages per batch request
+  -l, --limit=0            Max messages to analyze per stream (0 = all)
+      --[no-]per-stream    Also show stats and graphs for each individual stream
+      --csv=CSV            Export histogram data to CSV file
+      --min-rate-pct=10    Skip graph buckets below this percentage of max rate
+      --start=START        Start timestamp (RFC3339 or 2006-01-02 15:04:05)
+      --end=END            End timestamp (RFC3339 or 2006-01-02 15:04:05)
+      --since=SINCE        Relative start time (e.g., 1h, 30m, 2h30m)
+      --[no-]progress      Show progress during message fetching
+      --[no-]distribution  Show message distribution over streams
 ```
+## Notes
 
-Can also create ascii time series and generate CSV files.
-
-Note: Running this can be impactful on the NATS servers as it will try to get every single message from every single limits stream within the specified time interval (one by one and using batched direct gets to try and limit the impact).
+- 
+- Running this can be impactful on the NATS servers as it will try to get every single message from every single limits stream within the specified time interval (one by one , using batched direct gets to try and limit the impact).
