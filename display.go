@@ -256,15 +256,16 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 	printSkipped := func() {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
-			endStr := skipEnd.Format("2006-01-02 15:04:05")
-			fmt.Printf("  %-20s | %17s | ... %d buckets below threshold ...\n", startStr, "->"+endStr, skipCount)
+			duration := skipEnd.Sub(*skipStart) + hist.Granularity // Include the last bucket
+			fmt.Printf("  %-20s | %17s | ... %d buckets skipped ...\n", startStr, "+"+formatDuration(duration), skipCount)
 			skipCount = 0
 			skipStart = nil
 		}
 	}
 
 	for _, bucket := range hist.Buckets {
-		if bucket.SeqRate < threshold {
+		// Always hide empty buckets, or those below threshold
+		if bucket.SeqCount == 0 || bucket.SeqRate < threshold {
 			if skipStart == nil {
 				t := bucket.Start
 				skipStart = &t
@@ -357,17 +358,18 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 	printSkipped := func() {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
-			endStr := skipEnd.Format("2006-01-02 15:04:05")
-			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets below threshold ...\n",
-				startStr, "->"+endStr, combinedGraphWidth, "", "", skipCount)
+			duration := skipEnd.Sub(*skipStart) + hist.Granularity // Include the last bucket
+			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets skipped ...\n",
+				startStr, "+"+formatDuration(duration), combinedGraphWidth, "", "", skipCount)
 			skipCount = 0
 			skipStart = nil
 		}
 	}
 
 	for _, bucket := range hist.Buckets {
-		// Skip if both rate and throughput are below threshold
-		if bucket.SeqRate < rateThreshold && bucket.Throughput < tputThreshold {
+		// Always hide empty buckets, or those below threshold
+		if (bucket.SeqCount == 0 && bucket.Bytes == 0) ||
+			(bucket.SeqRate < rateThreshold && bucket.Throughput < tputThreshold) {
 			if skipStart == nil {
 				t := bucket.Start
 				skipStart = &t
@@ -458,15 +460,16 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 	printSkipped := func() {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
-			endStr := skipEnd.Format("2006-01-02 15:04:05")
-			fmt.Printf("  %-20s | %12s | ... %d buckets below threshold ...\n", startStr, "->"+endStr, skipCount)
+			duration := skipEnd.Sub(*skipStart) + hist.Granularity // Include the last bucket
+			fmt.Printf("  %-20s | %12s | ... %d buckets skipped ...\n", startStr, "+"+formatDuration(duration), skipCount)
 			skipCount = 0
 			skipStart = nil
 		}
 	}
 
 	for _, bucket := range hist.Buckets {
-		if bucket.Throughput < threshold {
+		// Always hide empty buckets, or those below threshold
+		if bucket.Bytes == 0 || bucket.Throughput < threshold {
 			if skipStart == nil {
 				t := bucket.Start
 				skipStart = &t
