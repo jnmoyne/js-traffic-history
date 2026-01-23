@@ -220,31 +220,32 @@ func PrintRateHistogram(hist *RateHistogram, opts GraphOptions) {
 }
 
 // printRateGraph prints a time-series graph showing rate per bucket over time
+// Shows stored messages (█) and interpolated deletes (░) in different shades
 func printRateGraph(hist *RateHistogram, minRatePct float64) {
 	if len(hist.Buckets) == 0 {
 		return
 	}
 
-	// Find max rate for scaling
-	maxRate := 0.0
+	// Find max SeqRate for scaling (includes both stored and deleted)
+	maxSeqRate := 0.0
 	for _, bucket := range hist.Buckets {
-		if bucket.Rate > maxRate {
-			maxRate = bucket.Rate
+		if bucket.SeqRate > maxSeqRate {
+			maxSeqRate = bucket.SeqRate
 		}
 	}
 
-	if maxRate == 0 {
+	if maxSeqRate == 0 {
 		fmt.Println("  No messages in any bucket")
 		fmt.Println()
 		return
 	}
 
-	// Calculate threshold
-	threshold := maxRate * minRatePct / 100.0
+	// Calculate threshold based on SeqRate
+	threshold := maxSeqRate * minRatePct / 100.0
 
-	fmt.Printf("  Message Rate (scale: 0 to %.1f msg/s, hiding < %.1f%%)\n", maxRate, minRatePct)
-	fmt.Printf("  %-20s | %12s | %s\n", "Time", "Rate", "Graph")
-	fmt.Printf("  %s-+-%s-+-%s\n", strings.Repeat("-", 20), strings.Repeat("-", 12), strings.Repeat("-", graphWidth))
+	fmt.Printf("  Message Rate (scale: 0 to %.1f msg/s, hiding < %.1f%%, █=stored ░=deleted)\n", maxSeqRate, minRatePct)
+	fmt.Printf("  %-20s | %8s %8s | %s\n", "Time", "Stored", "Deleted", "Graph")
+	fmt.Printf("  %s-+-%s-%s-+-%s\n", strings.Repeat("-", 20), strings.Repeat("-", 8), strings.Repeat("-", 8), strings.Repeat("-", graphWidth))
 
 	// Track skipped bucket ranges
 	var skipStart *time.Time
@@ -255,14 +256,14 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
 			endStr := skipEnd.Format("2006-01-02 15:04:05")
-			fmt.Printf("  %-20s | %12s | ... %d buckets below threshold ...\n", startStr, "->"+endStr, skipCount)
+			fmt.Printf("  %-20s | %17s | ... %d buckets below threshold ...\n", startStr, "->"+endStr, skipCount)
 			skipCount = 0
 			skipStart = nil
 		}
 	}
 
 	for _, bucket := range hist.Buckets {
-		if bucket.Rate < threshold {
+		if bucket.SeqRate < threshold {
 			if skipStart == nil {
 				t := bucket.Start
 				skipStart = &t
@@ -275,13 +276,28 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		// Print any accumulated skipped range
 		printSkipped()
 
-		barLen := int((bucket.Rate / maxRate) * float64(graphWidth))
-		if barLen < 0 {
-			barLen = 0
+		// Calculate bar lengths for stored and deleted portions
+		totalBarLen := int((bucket.SeqRate / maxSeqRate) * float64(graphWidth))
+		storedBarLen := int((bucket.Rate / maxSeqRate) * float64(graphWidth))
+		if totalBarLen < 0 {
+			totalBarLen = 0
 		}
-		bar := strings.Repeat("█", barLen)
+		if storedBarLen < 0 {
+			storedBarLen = 0
+		}
+		if storedBarLen > totalBarLen {
+			storedBarLen = totalBarLen
+		}
+		deletedBarLen := totalBarLen - storedBarLen
+
+		// Build two-tone bar: stored (█) + deleted (░)
+		bar := strings.Repeat("█", storedBarLen) + strings.Repeat("░", deletedBarLen)
+
+		// Calculate deleted count for display
+		deletedCount := bucket.SeqCount - bucket.Count
+
 		timeStr := bucket.Start.Format("2006-01-02 15:04:05")
-		fmt.Printf("  %-20s | %12.2f | %s\n", timeStr, bucket.Rate, bar)
+		fmt.Printf("  %-20s | %8d %8d | %s\n", timeStr, bucket.Count, deletedCount, bar)
 	}
 
 	// Print any remaining skipped range at the end
