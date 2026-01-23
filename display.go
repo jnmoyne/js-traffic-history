@@ -248,24 +248,43 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 	fmt.Printf("  %-20s | %8s %8s | %s\n", "Time", "Stored", "Deleted", "Graph")
 	fmt.Printf("  %s-+-%s-%s-+-%s\n", strings.Repeat("-", 20), strings.Repeat("-", 8), strings.Repeat("-", 8), strings.Repeat("-", graphWidth))
 
-	// Track skipped bucket ranges
+	// Track skipped bucket ranges (empty buckets)
 	var skipStart *time.Time
 	var skipEnd time.Time
 	skipCount := 0
 
+	// Track deleted-only bucket ranges (buckets with only deleted messages, no stored)
+	var delOnlyStart *time.Time
+	var delOnlyEnd time.Time
+	delOnlyCount := 0
+	delOnlyTotal := 0
+
 	printSkipped := func() {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
-			duration := skipEnd.Sub(*skipStart) + hist.Granularity // Include the last bucket
+			duration := skipEnd.Sub(*skipStart) + hist.Granularity
 			fmt.Printf("  %-20s | %17s | ... %d buckets skipped ...\n", startStr, "+"+formatDuration(duration), skipCount)
 			skipCount = 0
 			skipStart = nil
 		}
 	}
 
+	printDelOnly := func() {
+		if delOnlyCount > 0 && delOnlyStart != nil {
+			startStr := delOnlyStart.Format("2006-01-02 15:04:05")
+			duration := delOnlyEnd.Sub(*delOnlyStart) + hist.Granularity
+			fmt.Printf("  %-20s | %17s | ... %d buckets, %d deleted only ...\n", startStr, "+"+formatDuration(duration), delOnlyCount, delOnlyTotal)
+			delOnlyCount = 0
+			delOnlyTotal = 0
+			delOnlyStart = nil
+		}
+	}
+
 	for _, bucket := range hist.Buckets {
 		// Always hide empty buckets, or those below threshold
 		if bucket.SeqCount == 0 || bucket.SeqRate < threshold {
+			// First flush any deleted-only range
+			printDelOnly()
 			if skipStart == nil {
 				t := bucket.Start
 				skipStart = &t
@@ -275,8 +294,23 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 			continue
 		}
 
-		// Print any accumulated skipped range
+		// Check if this bucket has only deleted messages (no stored)
+		if bucket.Count == 0 && bucket.SeqCount > 0 {
+			// First flush any skipped range
+			printSkipped()
+			if delOnlyStart == nil {
+				t := bucket.Start
+				delOnlyStart = &t
+			}
+			delOnlyEnd = bucket.Start
+			delOnlyCount++
+			delOnlyTotal += bucket.SeqCount
+			continue
+		}
+
+		// Print any accumulated ranges
 		printSkipped()
+		printDelOnly()
 
 		// Calculate bar lengths for stored and deleted portions
 		totalBarLen := int((bucket.SeqRate / maxSeqRate) * float64(graphWidth))
@@ -302,8 +336,9 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		fmt.Printf("  %-20s | %8d %8d | %s\n", timeStr, bucket.Count, deletedCount, bar)
 	}
 
-	// Print any remaining skipped range at the end
+	// Print any remaining ranges at the end
 	printSkipped()
+	printDelOnly()
 
 	fmt.Println()
 }
@@ -350,15 +385,21 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 		strings.Repeat("-", 10),
 		strings.Repeat("-", combinedGraphWidth))
 
-	// Track skipped bucket ranges
+	// Track skipped bucket ranges (empty buckets)
 	var skipStart *time.Time
 	var skipEnd time.Time
 	skipCount := 0
 
+	// Track deleted-only bucket ranges (buckets with only deleted messages, no stored)
+	var delOnlyStart *time.Time
+	var delOnlyEnd time.Time
+	delOnlyCount := 0
+	delOnlyTotal := 0
+
 	printSkipped := func() {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
-			duration := skipEnd.Sub(*skipStart) + hist.Granularity // Include the last bucket
+			duration := skipEnd.Sub(*skipStart) + hist.Granularity
 			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets skipped ...\n",
 				startStr, "+"+formatDuration(duration), combinedGraphWidth, "", "", skipCount)
 			skipCount = 0
@@ -366,10 +407,24 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 		}
 	}
 
+	printDelOnly := func() {
+		if delOnlyCount > 0 && delOnlyStart != nil {
+			startStr := delOnlyStart.Format("2006-01-02 15:04:05")
+			duration := delOnlyEnd.Sub(*delOnlyStart) + hist.Granularity
+			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets, %d deleted only ...\n",
+				startStr, "+"+formatDuration(duration), combinedGraphWidth, "", "", delOnlyCount, delOnlyTotal)
+			delOnlyCount = 0
+			delOnlyTotal = 0
+			delOnlyStart = nil
+		}
+	}
+
 	for _, bucket := range hist.Buckets {
 		// Always hide empty buckets, or those below threshold
 		if (bucket.SeqCount == 0 && bucket.Bytes == 0) ||
 			(bucket.SeqRate < rateThreshold && bucket.Throughput < tputThreshold) {
+			// First flush any deleted-only range
+			printDelOnly()
 			if skipStart == nil {
 				t := bucket.Start
 				skipStart = &t
@@ -379,8 +434,23 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 			continue
 		}
 
-		// Print any accumulated skipped range
+		// Check if this bucket has only deleted messages (no stored)
+		if bucket.Count == 0 && bucket.SeqCount > 0 {
+			// First flush any skipped range
+			printSkipped()
+			if delOnlyStart == nil {
+				t := bucket.Start
+				delOnlyStart = &t
+			}
+			delOnlyEnd = bucket.Start
+			delOnlyCount++
+			delOnlyTotal += bucket.SeqCount
+			continue
+		}
+
+		// Print any accumulated ranges
 		printSkipped()
+		printDelOnly()
 
 		// Calculate rate bar lengths for stored and deleted portions
 		var rateBar string
@@ -421,8 +491,9 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 			formatBytesPerSec(bucket.Throughput), tputBar)
 	}
 
-	// Print any remaining skipped range at the end
+	// Print any remaining ranges at the end
 	printSkipped()
+	printDelOnly()
 
 	fmt.Println()
 }
