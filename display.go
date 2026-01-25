@@ -10,13 +10,252 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"golang.org/x/term"
 )
 
 const (
-	graphWidth       = 40
 	headerWidth      = 70
 	progressBarWidth = 30
+	// Fixed column widths for rate graph: "  " + time(19) + " | "
+	rateGraphFixedCols = 2 + 19 + 3
 )
+
+// buildLabeledRateBar creates a bar with rates embedded: stored rate in █ section, deleted rate in ░ section, total rate right-aligned
+func buildLabeledRateBar(graphWidth, storedBarLen, deletedBarLen int, storedRate, deletedRate, totalRate float64) string {
+	totalBarLen := storedBarLen + deletedBarLen
+
+	// Create arrays to track bar type at each position: 0=empty, 1=stored, 2=deleted
+	barType := make([]int, graphWidth)
+	barChars := make([]rune, graphWidth)
+	hasLabel := make([]bool, graphWidth) // Track positions with label text
+	for i := range barChars {
+		barChars[i] = ' '
+		barType[i] = 0
+		hasLabel[i] = false
+	}
+
+	// Fill with bar characters
+	for i := 0; i < storedBarLen && i < graphWidth; i++ {
+		barChars[i] = '█'
+		barType[i] = 1
+	}
+	for i := storedBarLen; i < totalBarLen && i < graphWidth; i++ {
+		barChars[i] = '░'
+		barType[i] = 2
+	}
+
+	// Format the rates
+	storedStr := formatScaleValue(storedRate)
+	deletedStr := formatScaleValue(deletedRate)
+	totalStr := formatScaleValue(totalRate)
+
+	// Place stored rate left-aligned in the black section (only on black bar positions)
+	if storedRate > 0 {
+		for i, r := range storedStr {
+			if i < graphWidth && barType[i] == 1 { // Only place on black bar
+				barChars[i] = r
+				hasLabel[i] = true
+			}
+		}
+	}
+
+	// Place deleted rate left-aligned in the grey section (only on grey bar positions)
+	if deletedRate > 0 {
+		for i, r := range deletedStr {
+			pos := storedBarLen + i
+			if pos < graphWidth && barType[pos] == 2 { // Only place on grey bar
+				barChars[pos] = r
+				hasLabel[pos] = true
+			}
+		}
+	}
+
+	// Place total rate right-aligned at the end of the graph
+	totalPos := graphWidth - len(totalStr)
+	if totalPos < 0 {
+		totalPos = 0
+	}
+	for i, r := range totalStr {
+		if totalPos+i < graphWidth {
+			barChars[totalPos+i] = r
+			hasLabel[totalPos+i] = true
+		}
+	}
+
+	// Build final string with ANSI codes for text on bar
+	// barType 1 (stored/black): use inverse video
+	// barType 2 (deleted/grey): use white text on grey background
+	var result strings.Builder
+	currentStyle := 0 // 0=normal, 1=inverse (for black), 2=white-on-grey (for deleted)
+	for i := 0; i < graphWidth; i++ {
+		targetStyle := 0
+		if hasLabel[i] {
+			if barType[i] == 1 {
+				targetStyle = 1 // inverse for black bar
+			} else if barType[i] == 2 {
+				targetStyle = 2 // white on grey for deleted bar
+			}
+		}
+
+		if targetStyle != currentStyle {
+			if currentStyle != 0 {
+				result.WriteString("\033[0m") // Reset first
+			}
+			if targetStyle == 1 {
+				result.WriteString("\033[7m") // Inverse
+			} else if targetStyle == 2 {
+				result.WriteString("\033[30;107m") // Black text on bright white background
+			}
+			currentStyle = targetStyle
+		}
+		result.WriteRune(barChars[i])
+	}
+	if currentStyle != 0 {
+		result.WriteString("\033[0m") // Reset at end
+	}
+
+	return result.String()
+}
+
+// buildLabeledTputBar creates a throughput bar with value right-aligned
+func buildLabeledTputBar(graphWidth, barLen int, throughput float64) string {
+	// Track if position is on bar
+	isBar := make([]bool, graphWidth)
+	barChars := make([]rune, graphWidth)
+	for i := range barChars {
+		barChars[i] = ' '
+		isBar[i] = false
+	}
+
+	// Fill with bar characters
+	for i := 0; i < barLen && i < graphWidth; i++ {
+		barChars[i] = '▓'
+		isBar[i] = true
+	}
+
+	// Format throughput and place right-aligned
+	tputStr := formatBytes(int64(throughput)) + "/s"
+	tputPos := graphWidth - len(tputStr)
+	if tputPos < 0 {
+		tputPos = 0
+	}
+	for i, r := range tputStr {
+		if tputPos+i < graphWidth {
+			barChars[tputPos+i] = r
+		}
+	}
+
+	// Build final string with ANSI codes for inverted text on bar
+	var result strings.Builder
+	inInverse := false
+	for i := 0; i < graphWidth; i++ {
+		isOnBar := isBar[i] && i >= tputPos && i < tputPos+len(tputStr)
+		if isOnBar && !inInverse {
+			result.WriteString("\033[7m") // Start inverse
+			inInverse = true
+		} else if !isOnBar && inInverse {
+			result.WriteString("\033[0m") // End inverse
+			inInverse = false
+		}
+		result.WriteRune(barChars[i])
+	}
+	if inInverse {
+		result.WriteString("\033[0m") // Reset at end
+	}
+
+	return result.String()
+}
+
+// printGraphScale prints a scale line for a graph with tick marks at 0%, 50%, and 100%
+func printGraphScale(prefix string, graphWidth int, maxValue float64, unit string) {
+	// Calculate positions for 0%, 50%, 100%
+	pos50 := graphWidth / 2
+	pos100 := graphWidth
+
+	// Format values
+	val0 := "0"
+	val50 := formatScaleValue(maxValue * 0.5)
+	val100 := formatScaleValue(maxValue)
+
+	// Build the scale line
+	scaleLine := make([]byte, graphWidth)
+	for i := range scaleLine {
+		scaleLine[i] = ' '
+	}
+
+	// Place tick marks
+	scaleLine[0] = '|'
+	if pos50 > 0 && pos50 < graphWidth {
+		scaleLine[pos50] = '|'
+	}
+	if pos100 > 0 && pos100 <= graphWidth {
+		scaleLine[pos100-1] = '|'
+	}
+
+	// Print scale line with labels below
+	fmt.Printf("%s%s\n", prefix, string(scaleLine))
+
+	// Build label line
+	labelLine := make([]byte, graphWidth)
+	for i := range labelLine {
+		labelLine[i] = ' '
+	}
+
+	// Place labels (0 at start, 50% in middle, 100% at end)
+	copy(labelLine[0:], val0)
+	mid50 := pos50 - len(val50)/2
+	if mid50 < len(val0)+1 {
+		mid50 = len(val0) + 1
+	}
+	if mid50+len(val50) <= graphWidth {
+		copy(labelLine[mid50:], val50)
+	}
+
+	// 100% label with unit at the end
+	endLabel := val100 + " " + unit
+	endPos := graphWidth - len(endLabel)
+	if endPos > mid50+len(val50)+1 {
+		copy(labelLine[endPos:], endLabel)
+	}
+
+	fmt.Printf("%s%s\n", prefix, string(labelLine))
+}
+
+// formatScaleValue formats a value for scale display
+func formatScaleValue(v float64) string {
+	if v >= 1000000 {
+		return fmt.Sprintf("%.1fM", v/1000000)
+	}
+	if v >= 1000 {
+		return fmt.Sprintf("%.1fK", v/1000)
+	}
+	if v >= 100 {
+		return fmt.Sprintf("%.0f", v)
+	}
+	if v >= 10 {
+		return fmt.Sprintf("%.1f", v)
+	}
+	return fmt.Sprintf("%.2f", v)
+}
+
+// getTerminalWidth returns the terminal width, or a default if it can't be determined
+func getTerminalWidth() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return 120 // default width
+	}
+	return width
+}
+
+// getGraphWidth calculates the available width for the graph based on terminal size
+func getGraphWidth(fixedCols int) int {
+	termWidth := getTerminalWidth()
+	graphWidth := termWidth - fixedCols
+	if graphWidth < 20 {
+		graphWidth = 20 // minimum graph width
+	}
+	return graphWidth
+}
 
 // PrintProgress prints a progress bar
 func PrintProgress(current, total int) {
@@ -128,6 +367,10 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 			}
 		}
 
+		// Calculate graph width for stream tables
+		// Fixed cols: "  " + name(maxNameLen) + " | " + messages(10) + " | " + data(10) + " | "
+		streamGraphWidth := getGraphWidth(2 + maxNameLen + 3 + 10 + 3 + 10 + 3)
+
 		// Table 1: Streams by Stored Message Count
 		fmt.Println("Streams Distribution by Stored Message Count:")
 		fmt.Printf("  %-*s | %10s | %10s | %s\n", maxNameLen, "Stream", "Messages", "Data", "Graph")
@@ -135,11 +378,11 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 			strings.Repeat("-", maxNameLen),
 			strings.Repeat("-", 10),
 			strings.Repeat("-", 10),
-			strings.Repeat("-", graphWidth))
+			strings.Repeat("-", streamGraphWidth))
 
 		maxMsgs := summary.Streams[0].Messages
 		for _, s := range summary.Streams {
-			barLen := int((float64(s.Messages) / float64(maxMsgs)) * float64(graphWidth))
+			barLen := int((float64(s.Messages) / float64(maxMsgs)) * float64(streamGraphWidth))
 			if barLen < 1 && s.Messages > 0 {
 				barLen = 1
 			}
@@ -158,18 +401,22 @@ func PrintReportSummary(summary ReportSummary, stats *RateStatistics, distributi
 			return cmp.Compare(seqCountB, seqCountA) // descending order
 		})
 
+		// Recalculate for table 2 which has different fixed columns
+		// Fixed cols: "  " + name(maxNameLen) + " | " + seqCount(10) + " | " + avgRate(12) + " | "
+		streamGraphWidth2 := getGraphWidth(2 + maxNameLen + 3 + 10 + 3 + 12 + 3)
+
 		fmt.Println("Streams Distribution by per Sequence Number Count:")
 		fmt.Printf("  %-*s | %10s | %12s | %s\n", maxNameLen, "Stream", "Seq Count", "Avg Rate", "Graph")
 		fmt.Printf("  %s-+-%s-+-%s-+-%s\n",
 			strings.Repeat("-", maxNameLen),
 			strings.Repeat("-", 10),
 			strings.Repeat("-", 12),
-			strings.Repeat("-", graphWidth))
+			strings.Repeat("-", streamGraphWidth2))
 
 		maxSeqCount := streamsBySeq[0].LastSeq - streamsBySeq[0].FirstSeq + 1
 		for _, s := range streamsBySeq {
 			seqCount := s.LastSeq - s.FirstSeq
-			barLen := int((float64(seqCount) / float64(maxSeqCount)) * float64(graphWidth))
+			barLen := int((float64(seqCount) / float64(maxSeqCount)) * float64(streamGraphWidth2))
 			if barLen < 1 && seqCount > 0 {
 				barLen = 1
 			}
@@ -227,6 +474,9 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		return
 	}
 
+	// Calculate graph width based on terminal size
+	graphWidth := getGraphWidth(rateGraphFixedCols)
+
 	// Find max SeqRate for scaling (includes both stored and deleted)
 	maxSeqRate := 0.0
 	for _, bucket := range hist.Buckets {
@@ -244,9 +494,13 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 	// Calculate threshold based on SeqRate
 	threshold := maxSeqRate * minRatePct / 100.0
 
-	fmt.Printf("  Message Rate (scale: 0 to %.1f msg/s, hiding < %.1f%%, █=stored ░=deleted)\n", maxSeqRate, minRatePct)
-	fmt.Printf("  %-20s | %8s %8s | %s\n", "Time", "Stored", "Deleted", "Graph")
-	fmt.Printf("  %s-+-%s-%s-+-%s\n", strings.Repeat("-", 20), strings.Repeat("-", 8), strings.Repeat("-", 8), strings.Repeat("-", graphWidth))
+	fmt.Printf("  Message Rate (hiding < %.1f%%, █=stored ░=deleted, total right-aligned)\n", minRatePct)
+	fmt.Printf("  %-19s | %s\n", "Time", "Graph (stored | deleted | total)")
+	fmt.Printf("  %s-+-%s\n", strings.Repeat("-", 19), strings.Repeat("-", graphWidth))
+
+	// Print scale line at top
+	scalePrefix := fmt.Sprintf("  %-19s | ", "")
+	printGraphScale(scalePrefix, graphWidth, maxSeqRate, "msg/s")
 
 	// Track skipped bucket ranges (empty buckets)
 	var skipStart *time.Time
@@ -263,7 +517,9 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
 			duration := skipEnd.Sub(*skipStart) + hist.Granularity
-			fmt.Printf("  %-20s | %17s | ... %d buckets skipped ...\n", startStr, "+"+formatDuration(duration), skipCount)
+			durationStr := "+" + formatDuration(duration)
+			rateMsg := fmt.Sprintf("... %d skipped %s ...", skipCount, durationStr)
+			fmt.Printf("  %-19s | %-*s\n", startStr, graphWidth, rateMsg)
 			skipCount = 0
 			skipStart = nil
 		}
@@ -273,7 +529,9 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		if delOnlyCount > 0 && delOnlyStart != nil {
 			startStr := delOnlyStart.Format("2006-01-02 15:04:05")
 			duration := delOnlyEnd.Sub(*delOnlyStart) + hist.Granularity
-			fmt.Printf("  %-20s | %17s | ... %d buckets, %d deleted only ...\n", startStr, "+"+formatDuration(duration), delOnlyCount, delOnlyTotal)
+			durationStr := "+" + formatDuration(duration)
+			rateMsg := fmt.Sprintf("... %d del-only %s ...", delOnlyCount, durationStr)
+			fmt.Printf("  %-19s | %-*s\n", startStr, graphWidth, rateMsg)
 			delOnlyCount = 0
 			delOnlyTotal = 0
 			delOnlyStart = nil
@@ -326,29 +584,48 @@ func printRateGraph(hist *RateHistogram, minRatePct float64) {
 		}
 		deletedBarLen := totalBarLen - storedBarLen
 
-		// Build two-tone bar: stored (█) + deleted (░)
-		bar := strings.Repeat("█", storedBarLen) + strings.Repeat("░", deletedBarLen)
+		// Calculate deleted rate
+		deletedRate := bucket.SeqRate - bucket.Rate
 
-		// Calculate deleted count for display
-		deletedCount := bucket.SeqCount - bucket.Count
+		// Build labeled bar with rates embedded
+		bar := buildLabeledRateBar(graphWidth, storedBarLen, deletedBarLen, bucket.Rate, deletedRate, bucket.SeqRate)
 
 		timeStr := bucket.Start.Format("2006-01-02 15:04:05")
-		fmt.Printf("  %-20s | %8d %8d | %s\n", timeStr, bucket.Count, deletedCount, bar)
+		fmt.Printf("  %-19s | %s\n", timeStr, bar)
 	}
 
 	// Print any remaining ranges at the end
 	printSkipped()
 	printDelOnly()
 
+	// Print scale line at bottom
+	printGraphScale(scalePrefix, graphWidth, maxSeqRate, "msg/s")
+
 	fmt.Println()
 }
-
-const combinedGraphWidth = 25 // Smaller width for combined graphs
 
 // printCombinedGraph prints rate and throughput on the same line
 func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 	if len(hist.Buckets) == 0 {
 		return
+	}
+
+	// Calculate graph widths based on terminal size
+	// Fixed cols: "  " + time(19) + " | " + rateGraph + " | " + tputGraph
+	// Fixed parts: 2 + 19 + 3 + 3 = 27, plus two graph columns
+	termWidth := getTerminalWidth()
+	availableForGraphs := termWidth - 27
+	if availableForGraphs < 20 {
+		availableForGraphs = 20
+	}
+	// Split available space between rate and throughput graphs (60/40 split favoring rate)
+	rateGraphWidth := availableForGraphs * 6 / 10
+	tputGraphWidth := availableForGraphs - rateGraphWidth
+	if rateGraphWidth < 10 {
+		rateGraphWidth = 10
+	}
+	if tputGraphWidth < 10 {
+		tputGraphWidth = 10
 	}
 
 	// Find max SeqRate and max Throughput for scaling
@@ -373,17 +650,16 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 	rateThreshold := maxSeqRate * minRatePct / 100.0
 	tputThreshold := maxTput * minRatePct / 100.0
 
-	fmt.Printf("  Rate: 0-%.1f msg/s (█=stored ░=deleted) | Throughput: 0-%s/s | hiding < %.1f%%\n",
-		maxSeqRate, formatBytes(int64(maxTput)), minRatePct)
-	fmt.Printf("  %-20s | %6s %6s | %-*s | %10s | %s\n",
-		"Time", "Stored", "Del", combinedGraphWidth, "Rate Graph", "Throughput", "Tput Graph")
-	fmt.Printf("  %s-+-%s-%s-+-%s-+-%s-+-%s\n",
-		strings.Repeat("-", 20),
-		strings.Repeat("-", 6),
-		strings.Repeat("-", 6),
-		strings.Repeat("-", combinedGraphWidth),
-		strings.Repeat("-", 10),
-		strings.Repeat("-", combinedGraphWidth))
+	fmt.Printf("  Rate (█=stored ░=deleted) | Throughput (▓) | hiding < %.1f%%\n", minRatePct)
+	fmt.Printf("  %-19s | %-*s | %s\n",
+		"Time", rateGraphWidth, "Rate Graph", "Tput Graph")
+	fmt.Printf("  %s-+-%s-+-%s\n",
+		strings.Repeat("-", 19),
+		strings.Repeat("-", rateGraphWidth),
+		strings.Repeat("-", tputGraphWidth))
+
+	// Print scale lines at top
+	printCombinedGraphScale(rateGraphWidth, tputGraphWidth, maxSeqRate, maxTput)
 
 	// Track skipped bucket ranges (empty buckets)
 	var skipStart *time.Time
@@ -400,8 +676,11 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 		if skipCount > 0 && skipStart != nil {
 			startStr := skipStart.Format("2006-01-02 15:04:05")
 			duration := skipEnd.Sub(*skipStart) + hist.Granularity
-			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets skipped ...\n",
-				startStr, "+"+formatDuration(duration), combinedGraphWidth, "", "", skipCount)
+			durationStr := "+" + formatDuration(duration)
+			rateMsg := fmt.Sprintf("... %d skipped %s ...", skipCount, durationStr)
+			tputMsg := fmt.Sprintf("... %s ...", durationStr)
+			fmt.Printf("  %-19s | %-*s | %-*s\n",
+				startStr, rateGraphWidth, rateMsg, tputGraphWidth, tputMsg)
 			skipCount = 0
 			skipStart = nil
 		}
@@ -411,8 +690,11 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 		if delOnlyCount > 0 && delOnlyStart != nil {
 			startStr := delOnlyStart.Format("2006-01-02 15:04:05")
 			duration := delOnlyEnd.Sub(*delOnlyStart) + hist.Granularity
-			fmt.Printf("  %-20s | %13s | %-*s | %10s | ... %d buckets, %d deleted only ...\n",
-				startStr, "+"+formatDuration(duration), combinedGraphWidth, "", "", delOnlyCount, delOnlyTotal)
+			durationStr := "+" + formatDuration(duration)
+			rateMsg := fmt.Sprintf("... %d del-only %s ...", delOnlyCount, durationStr)
+			tputMsg := fmt.Sprintf("... %s ...", durationStr)
+			fmt.Printf("  %-19s | %-*s | %-*s\n",
+				startStr, rateGraphWidth, rateMsg, tputGraphWidth, tputMsg)
 			delOnlyCount = 0
 			delOnlyTotal = 0
 			delOnlyStart = nil
@@ -453,10 +735,10 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 		printDelOnly()
 
 		// Calculate rate bar lengths for stored and deleted portions
-		var rateBar string
+		var storedBarLen, deletedBarLen int
 		if maxSeqRate > 0 {
-			totalBarLen := int((bucket.SeqRate / maxSeqRate) * float64(combinedGraphWidth))
-			storedBarLen := int((bucket.Rate / maxSeqRate) * float64(combinedGraphWidth))
+			totalBarLen := int((bucket.SeqRate / maxSeqRate) * float64(rateGraphWidth))
+			storedBarLen = int((bucket.Rate / maxSeqRate) * float64(rateGraphWidth))
 			if totalBarLen < 0 {
 				totalBarLen = 0
 			}
@@ -466,36 +748,100 @@ func printCombinedGraph(hist *RateHistogram, minRatePct float64) {
 			if storedBarLen > totalBarLen {
 				storedBarLen = totalBarLen
 			}
-			deletedBarLen := totalBarLen - storedBarLen
-			rateBar = strings.Repeat("█", storedBarLen) + strings.Repeat("░", deletedBarLen)
+			deletedBarLen = totalBarLen - storedBarLen
 		}
-		// Pad rate bar to fixed width
-		rateBar = fmt.Sprintf("%-*s", combinedGraphWidth, rateBar)
 
-		// Calculate throughput bar
-		var tputBar string
+		// Calculate deleted rate
+		deletedRate := bucket.SeqRate - bucket.Rate
+
+		// Build labeled rate bar with rates embedded
+		rateBar := buildLabeledRateBar(rateGraphWidth, storedBarLen, deletedBarLen, bucket.Rate, deletedRate, bucket.SeqRate)
+
+		// Calculate throughput bar with label
+		var tputBarLen int
 		if maxTput > 0 {
-			tputBarLen := int((bucket.Throughput / maxTput) * float64(combinedGraphWidth))
+			tputBarLen = int((bucket.Throughput / maxTput) * float64(tputGraphWidth))
 			if tputBarLen < 0 {
 				tputBarLen = 0
 			}
-			tputBar = strings.Repeat("▓", tputBarLen)
 		}
-
-		// Calculate deleted count for display
-		deletedCount := bucket.SeqCount - bucket.Count
+		tputBar := buildLabeledTputBar(tputGraphWidth, tputBarLen, bucket.Throughput)
 
 		timeStr := bucket.Start.Format("2006-01-02 15:04:05")
-		fmt.Printf("  %-20s | %6d %6d | %s | %10s | %s\n",
-			timeStr, bucket.Count, deletedCount, rateBar,
-			formatBytesPerSec(bucket.Throughput), tputBar)
+		fmt.Printf("  %-19s | %s | %s\n",
+			timeStr, rateBar, tputBar)
 	}
 
 	// Print any remaining ranges at the end
 	printSkipped()
 	printDelOnly()
 
+	// Print scale lines for both graphs
+	printCombinedGraphScale(rateGraphWidth, tputGraphWidth, maxSeqRate, maxTput)
+
 	fmt.Println()
+}
+
+// printCombinedGraphScale prints scale lines for the combined rate and throughput graphs
+func printCombinedGraphScale(rateWidth, tputWidth int, maxRate, maxTput float64) {
+	prefix := fmt.Sprintf("  %-19s | ", "")
+
+	// Build rate scale tick marks
+	rateScale := make([]byte, rateWidth)
+	for i := range rateScale {
+		rateScale[i] = ' '
+	}
+	rateScale[0] = '|'
+	if rateWidth/2 > 0 {
+		rateScale[rateWidth/2] = '|'
+	}
+	rateScale[rateWidth-1] = '|'
+
+	// Build tput scale tick marks
+	tputScale := make([]byte, tputWidth)
+	for i := range tputScale {
+		tputScale[i] = ' '
+	}
+	tputScale[0] = '|'
+	if tputWidth/2 > 0 {
+		tputScale[tputWidth/2] = '|'
+	}
+	if tputWidth > 0 {
+		tputScale[tputWidth-1] = '|'
+	}
+
+	fmt.Printf("%s%s | %s\n", prefix, string(rateScale), string(tputScale))
+
+	// Build rate labels
+	rateLabels := make([]byte, rateWidth)
+	for i := range rateLabels {
+		rateLabels[i] = ' '
+	}
+	copy(rateLabels[0:], "0")
+	rateMid := formatScaleValue(maxRate * 0.5)
+	midPos := rateWidth/2 - len(rateMid)/2
+	if midPos > 1 {
+		copy(rateLabels[midPos:], rateMid)
+	}
+	rateEnd := formatScaleValue(maxRate) + " msg/s"
+	endPos := rateWidth - len(rateEnd)
+	if endPos > midPos+len(rateMid)+1 {
+		copy(rateLabels[endPos:], rateEnd)
+	}
+
+	// Build tput labels
+	tputLabels := make([]byte, tputWidth)
+	for i := range tputLabels {
+		tputLabels[i] = ' '
+	}
+	copy(tputLabels[0:], "0")
+	tputEnd := formatBytes(int64(maxTput)) + "/s"
+	tputEndPos := tputWidth - len(tputEnd)
+	if tputEndPos > 1 {
+		copy(tputLabels[tputEndPos:], tputEnd)
+	}
+
+	fmt.Printf("%s%s | %s\n", prefix, string(rateLabels), string(tputLabels))
 }
 
 // printThroughputGraph prints a time-series graph showing throughput per bucket
@@ -503,6 +849,10 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 	if len(hist.Buckets) == 0 {
 		return
 	}
+
+	// Calculate graph width based on terminal size
+	// Fixed cols: "  " + time(20) + " | " + throughput(12) + " | "
+	graphWidth := getGraphWidth(2 + 20 + 3 + 12 + 3)
 
 	// Find max throughput for scaling
 	maxTput := 0.0
@@ -519,9 +869,13 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 	// Calculate threshold
 	threshold := maxTput * minRatePct / 100.0
 
-	fmt.Printf("  Throughput (scale: 0 to %s/s, hiding < %.1f%%)\n", formatBytes(int64(maxTput)), minRatePct)
+	fmt.Printf("  Throughput (hiding < %.1f%%)\n", minRatePct)
 	fmt.Printf("  %-20s | %12s | %s\n", "Time", "Throughput", "Graph")
 	fmt.Printf("  %s-+-%s-+-%s\n", strings.Repeat("-", 20), strings.Repeat("-", 12), strings.Repeat("-", graphWidth))
+
+	// Print scale line at top
+	scalePrefix := fmt.Sprintf("  %-20s | %12s | ", "", "")
+	printGraphScale(scalePrefix, graphWidth, maxTput, "B/s")
 
 	// Track skipped bucket ranges
 	var skipStart *time.Time
@@ -564,6 +918,9 @@ func printThroughputGraph(hist *RateHistogram, minRatePct float64) {
 
 	// Print any remaining skipped range at the end
 	printSkipped()
+
+	// Print scale line at bottom
+	printGraphScale(scalePrefix, graphWidth, maxTput, "B/s")
 
 	fmt.Println()
 }

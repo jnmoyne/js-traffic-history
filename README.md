@@ -5,7 +5,7 @@ Tool to create statistics and a history of NATS JetStream message traffic from t
 
 The tool can only work on the data that is still stored in the streams at the time you run it, meaning it doesn't have detailed info about deleted messages. It does however try to remediate some of that by interpolating 'interior deletes' from the gaps in sequence numbers.
 
-
+The tool only reports on stream publication rate which is only part of the load incurred on the servers, as there are typically also consumers being used (and therefore incurring load on the servers) at the same time.
 
 ## Usage
 
