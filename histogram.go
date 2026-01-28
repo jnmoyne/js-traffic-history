@@ -1,10 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
 )
+
+// StreamBucketData holds per-stream data within a bucket
+type StreamBucketData struct {
+	Count int
+	Bytes int64
+}
 
 // RateBucket represents a time bucket with message count and throughput
 type RateBucket struct {
@@ -16,6 +23,12 @@ type RateBucket struct {
 	Rate       float64 // messages per second (stored)
 	SeqRate    float64 // messages per second (per sequence numbers, with deletes interpolated)
 	Throughput float64 // bytes per second
+	// Message size stats for this bucket
+	MinMsgSize int
+	MaxMsgSize int
+	SumMsgSize int64 // sum of message sizes for average calculation
+	// Per-stream breakdown (only populated for combined histogram)
+	PerStream map[string]*StreamBucketData
 }
 
 // RateStatistics contains statistics for rate analysis
@@ -165,9 +178,13 @@ func BuildReportSummary(messages []MessageData, streamCount int) ReportSummary {
 }
 
 // BuildRateHistogram creates a rate histogram from message data
-func BuildRateHistogram(messages []MessageData, granularity time.Duration) *RateHistogram {
+func BuildRateHistogram(streamName string, messages []MessageData, granularity time.Duration, showProgress bool) *RateHistogram {
 	if len(messages) == 0 {
 		return &RateHistogram{Granularity: granularity}
+	}
+
+	if showProgress {
+		fmt.Printf("Building rate histogram for %s from %d messages...\n", streamName, len(messages))
 	}
 
 	// Find time range and sequence range
@@ -208,23 +225,59 @@ func BuildRateHistogram(messages []MessageData, granularity time.Duration) *Rate
 		buckets[bucketIdx].Bytes += int64(msg.Size)
 		totalBytes += int64(msg.Size)
 		msgSizes[i] = msg.Size
+
+		// Track message size stats per bucket
+		buckets[bucketIdx].SumMsgSize += int64(msg.Size)
+		if buckets[bucketIdx].Count == 1 {
+			// First message in this bucket - initialize min/max
+			buckets[bucketIdx].MinMsgSize = msg.Size
+			buckets[bucketIdx].MaxMsgSize = msg.Size
+		} else {
+			if msg.Size < buckets[bucketIdx].MinMsgSize {
+				buckets[bucketIdx].MinMsgSize = msg.Size
+			}
+			if msg.Size > buckets[bucketIdx].MaxMsgSize {
+				buckets[bucketIdx].MaxMsgSize = msg.Size
+			}
+		}
+
+		// Track per-stream data
+		if buckets[bucketIdx].PerStream == nil {
+			buckets[bucketIdx].PerStream = make(map[string]*StreamBucketData)
+		}
+		streamData := buckets[bucketIdx].PerStream[msg.StreamName]
+		if streamData == nil {
+			streamData = &StreamBucketData{}
+			buckets[bucketIdx].PerStream[msg.StreamName] = streamData
+		}
+		streamData.Count++
+		streamData.Bytes += int64(msg.Size)
 	}
 
 	// Interpolate deleted messages: distribute gaps between consecutive messages
 	// across the buckets spanning their timestamps
-	for i := 1; i < len(messages); i++ {
-		prevMsg := messages[i-1]
-		currMsg := messages[i]
+	// IMPORTANT: Track the last seen message per stream, since sequence numbers
+	// are per-stream and messages from multiple streams may be interleaved
+	lastMsgPerStream := make(map[string]*MessageData)
 
-		// Calculate how many messages were deleted between these two
-		gap := int(currMsg.Sequence - prevMsg.Sequence - 1)
+	for i := range messages {
+		msg := &messages[i]
+		prevMsg, hasPrev := lastMsgPerStream[msg.StreamName]
+		lastMsgPerStream[msg.StreamName] = msg
+
+		if !hasPrev {
+			continue
+		}
+
+		// Calculate how many messages were deleted between these two (same stream)
+		gap := int(msg.Sequence - prevMsg.Sequence - 1)
 		if gap <= 0 {
 			continue
 		}
 
 		// Find the bucket indices for the two messages
 		prevBucketIdx := int(prevMsg.Timestamp.Sub(startTime) / granularity)
-		currBucketIdx := int(currMsg.Timestamp.Sub(startTime) / granularity)
+		currBucketIdx := int(msg.Timestamp.Sub(startTime) / granularity)
 
 		// Clamp to valid range
 		if prevBucketIdx < 0 {
@@ -431,6 +484,189 @@ func calculateRateStats(buckets []RateBucket, totalMessages int, totalBytes int6
 			sumSquaredDiff += diff * diff
 		}
 		stats.StdDevMsgSize = math.Sqrt(sumSquaredDiff / float64(len(sizesFloat)))
+	}
+
+	return stats
+}
+
+// CalculateStatsFromBuckets computes statistics from buckets only (for filtered ranges)
+// This is used when we don't have access to individual message data
+func CalculateStatsFromBuckets(buckets []RateBucket) RateStatistics {
+	if len(buckets) == 0 {
+		return RateStatistics{}
+	}
+
+	// Find time range from buckets
+	startTime := buckets[0].Start
+	endTime := buckets[len(buckets)-1].End
+
+	// Calculate totals from buckets
+	var totalMessages int
+	var totalBytes int64
+	for _, b := range buckets {
+		totalMessages += b.Count
+		totalBytes += b.Bytes
+	}
+
+	stats := RateStatistics{
+		TotalMessages: totalMessages,
+		TotalBytes:    totalBytes,
+		StartTime:     startTime,
+		EndTime:       endTime,
+		TotalDuration: endTime.Sub(startTime),
+		TotalBuckets:  len(buckets),
+	}
+
+	// Collect rates, seqRates, and throughputs for percentile calculation
+	rates := make([]float64, len(buckets))
+	seqRates := make([]float64, len(buckets))
+	throughputs := make([]float64, len(buckets))
+	var sumRate, sumSeqRate, sumTput float64
+	stats.MinRate = buckets[0].Rate
+	stats.MaxRate = buckets[0].Rate
+	stats.MinSeqRate = buckets[0].SeqRate
+	stats.MaxSeqRate = buckets[0].SeqRate
+	stats.MinThroughput = buckets[0].Throughput
+	stats.MaxThroughput = buckets[0].Throughput
+
+	for i, bucket := range buckets {
+		rates[i] = bucket.Rate
+		seqRates[i] = bucket.SeqRate
+		throughputs[i] = bucket.Throughput
+		sumRate += bucket.Rate
+		sumSeqRate += bucket.SeqRate
+		sumTput += bucket.Throughput
+
+		if bucket.Rate < stats.MinRate {
+			stats.MinRate = bucket.Rate
+		}
+		if bucket.Rate > stats.MaxRate {
+			stats.MaxRate = bucket.Rate
+		}
+		if bucket.SeqRate < stats.MinSeqRate {
+			stats.MinSeqRate = bucket.SeqRate
+		}
+		if bucket.SeqRate > stats.MaxSeqRate {
+			stats.MaxSeqRate = bucket.SeqRate
+		}
+		if bucket.Throughput < stats.MinThroughput {
+			stats.MinThroughput = bucket.Throughput
+		}
+		if bucket.Throughput > stats.MaxThroughput {
+			stats.MaxThroughput = bucket.Throughput
+		}
+		if bucket.Count > 0 {
+			stats.ActiveBuckets++
+		}
+	}
+
+	// Average rate, seqRate, and throughput
+	stats.AvgRate = sumRate / float64(len(buckets))
+	stats.AvgSeqRate = sumSeqRate / float64(len(buckets))
+	stats.AvgThroughput = sumTput / float64(len(buckets))
+
+	// Sort for percentiles
+	sort.Float64s(rates)
+	sort.Float64s(seqRates)
+	sort.Float64s(throughputs)
+
+	// Calculate rate percentiles
+	stats.P50Rate = percentileFloat64(rates, 0.50)
+	stats.P90Rate = percentileFloat64(rates, 0.90)
+	stats.P99Rate = percentileFloat64(rates, 0.99)
+	stats.P999Rate = percentileFloat64(rates, 0.999)
+
+	// Calculate sequence-based rate percentiles
+	stats.P50SeqRate = percentileFloat64(seqRates, 0.50)
+	stats.P90SeqRate = percentileFloat64(seqRates, 0.90)
+	stats.P99SeqRate = percentileFloat64(seqRates, 0.99)
+	stats.P999SeqRate = percentileFloat64(seqRates, 0.999)
+
+	// Calculate throughput percentiles
+	stats.P50Throughput = percentileFloat64(throughputs, 0.50)
+	stats.P90Throughput = percentileFloat64(throughputs, 0.90)
+	stats.P99Throughput = percentileFloat64(throughputs, 0.99)
+	stats.P999Throughput = percentileFloat64(throughputs, 0.999)
+
+	// Standard deviation for rate
+	var sumSquaredDiff float64
+	for _, rate := range rates {
+		diff := rate - stats.AvgRate
+		sumSquaredDiff += diff * diff
+	}
+	stats.StdDevRate = math.Sqrt(sumSquaredDiff / float64(len(rates)))
+
+	// Standard deviation for sequence-based rate
+	sumSquaredDiff = 0
+	for _, seqRate := range seqRates {
+		diff := seqRate - stats.AvgSeqRate
+		sumSquaredDiff += diff * diff
+	}
+	stats.StdDevSeqRate = math.Sqrt(sumSquaredDiff / float64(len(seqRates)))
+
+	// Standard deviation for throughput
+	sumSquaredDiff = 0
+	for _, tput := range throughputs {
+		diff := tput - stats.AvgThroughput
+		sumSquaredDiff += diff * diff
+	}
+	stats.StdDevTput = math.Sqrt(sumSquaredDiff / float64(len(throughputs)))
+
+	// Calculate message size statistics from bucket data
+	// Collect all message sizes by expanding bucket stats
+	var allMsgSizes []float64
+	var sumMsgSize int64
+	firstBucketWithMessages := true
+
+	for _, bucket := range buckets {
+		if bucket.Count == 0 {
+			continue
+		}
+
+		sumMsgSize += bucket.SumMsgSize
+
+		// Track min/max across all buckets
+		if firstBucketWithMessages {
+			stats.MinMsgSize = bucket.MinMsgSize
+			stats.MaxMsgSize = bucket.MaxMsgSize
+			firstBucketWithMessages = false
+		} else {
+			if bucket.MinMsgSize < stats.MinMsgSize {
+				stats.MinMsgSize = bucket.MinMsgSize
+			}
+			if bucket.MaxMsgSize > stats.MaxMsgSize {
+				stats.MaxMsgSize = bucket.MaxMsgSize
+			}
+		}
+
+		// For percentile calculation, we use the average message size per bucket
+		// weighted by count (approximation since we don't have individual sizes)
+		if bucket.Count > 0 {
+			avgSize := float64(bucket.SumMsgSize) / float64(bucket.Count)
+			for j := 0; j < bucket.Count; j++ {
+				allMsgSizes = append(allMsgSizes, avgSize)
+			}
+		}
+	}
+
+	if totalMessages > 0 {
+		stats.AvgMsgSize = float64(sumMsgSize) / float64(totalMessages)
+
+		// Sort for percentiles
+		sort.Float64s(allMsgSizes)
+
+		stats.P50MsgSize = percentileFloat64(allMsgSizes, 0.50)
+		stats.P90MsgSize = percentileFloat64(allMsgSizes, 0.90)
+		stats.P99MsgSize = percentileFloat64(allMsgSizes, 0.99)
+		stats.P999MsgSize = percentileFloat64(allMsgSizes, 0.999)
+
+		// Standard deviation (approximation using bucket averages)
+		sumSquaredDiff = 0
+		for _, size := range allMsgSizes {
+			diff := size - stats.AvgMsgSize
+			sumSquaredDiff += diff * diff
+		}
+		stats.StdDevMsgSize = math.Sqrt(sumSquaredDiff / float64(len(allMsgSizes)))
 	}
 
 	return stats

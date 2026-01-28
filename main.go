@@ -32,6 +32,9 @@ type Config struct {
 	Since           time.Duration
 	ShowProgress    bool
 	Distribution    bool
+	GUI             bool
+	GUIPort         int
+	GUIBrowser      bool
 }
 
 func main() {
@@ -110,6 +113,17 @@ func parseFlags() Config {
 	app.Flag("distribution", "Show message distribution over streams").
 		Default("true").
 		BoolVar(&cfg.Distribution)
+
+	app.Flag("gui", "Launch web-based interactive GUI").
+		BoolVar(&cfg.GUI)
+
+	app.Flag("gui-port", "Port for web-based GUI server").
+		Default("8080").
+		IntVar(&cfg.GUIPort)
+
+	app.Flag("browser", "Auto-open browser when GUI starts").
+		Default("true").
+		BoolVar(&cfg.GUIBrowser)
 
 	app.MustParseWithUsage(os.Args[1:])
 
@@ -271,7 +285,29 @@ func run(cfg Config) error {
 		return allMessages[i].Timestamp.Before(allMessages[j].Timestamp)
 	})
 
-	// Build graph options
+	// Build report summary and combined histogram
+	summary := BuildReportSummary(allMessages, len(streams))
+	var combinedHist *RateHistogram
+	if len(allMessages) > 0 {
+		combinedHist = BuildRateHistogram("combined", allMessages, cfg.RateGranularity, cfg.ShowProgress)
+	}
+
+	// Build per-stream histograms
+	streamHistograms := make(map[string]*RateHistogram)
+	for _, streamInfo := range streams {
+		messages, ok := streamMessages[streamInfo.Name]
+		if !ok || len(messages) == 0 {
+			continue
+		}
+		streamHistograms[streamInfo.Name] = BuildRateHistogram(streamInfo.Name, messages, cfg.RateGranularity, cfg.ShowProgress)
+	}
+
+	// GUI mode: start web server
+	if cfg.GUI {
+		return StartGUIServer(cfg.GUIPort, cfg.GUIBrowser, combinedHist, streamHistograms, &summary)
+	}
+
+	// CLI mode: print to terminal
 	graphOpts := GraphOptions{
 		ShowGraph:      cfg.ShowGraph,
 		ShowRate:       cfg.ShowRate,
@@ -279,16 +315,9 @@ func run(cfg Config) error {
 		MinRatePct:     cfg.MinRatePct,
 	}
 
-	// Build report summary and histogram
-	summary := BuildReportSummary(allMessages, len(streams))
-	var rateHist *RateHistogram
-	if len(allMessages) > 0 {
-		rateHist = BuildRateHistogram(allMessages, cfg.RateGranularity)
-	}
-
 	// Print report summary with stats
-	if rateHist != nil {
-		PrintReportSummary(summary, &rateHist.Stats, cfg.Distribution)
+	if combinedHist != nil {
+		PrintReportSummary(summary, &combinedHist.Stats, cfg.Distribution)
 	} else {
 		PrintReportSummary(summary, nil, cfg.Distribution)
 	}
@@ -297,26 +326,24 @@ func run(cfg Config) error {
 	if cfg.PerStream {
 		csvFirstWrite := true
 		for _, streamInfo := range streams {
-			messages, ok := streamMessages[streamInfo.Name]
-			if !ok || len(messages) == 0 {
+			hist, ok := streamHistograms[streamInfo.Name]
+			if !ok {
 				continue
 			}
 
+			messages := streamMessages[streamInfo.Name]
 			PrintStreamHeader(streamInfo.Name, len(messages))
-
-			// Build and display rate over time
-			rateHist := BuildRateHistogram(messages, cfg.RateGranularity)
-			PrintRateHistogram(rateHist, graphOpts)
+			PrintRateHistogram(hist, graphOpts)
 
 			// Write per-stream data to CSV if requested
 			if cfg.CSVFile != "" {
 				if csvFirstWrite {
-					if err := WriteCSV(cfg.CSVFile, rateHist, streamInfo.Name); err != nil {
+					if err := WriteCSV(cfg.CSVFile, hist, streamInfo.Name); err != nil {
 						return fmt.Errorf("failed to write CSV: %w", err)
 					}
 					csvFirstWrite = false
 				} else {
-					if err := AppendCSV(cfg.CSVFile, rateHist, streamInfo.Name); err != nil {
+					if err := AppendCSV(cfg.CSVFile, hist, streamInfo.Name); err != nil {
 						return fmt.Errorf("failed to append to CSV: %w", err)
 					}
 				}
