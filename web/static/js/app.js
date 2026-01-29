@@ -14,6 +14,7 @@
     let zoomHistory = [];                           // Stack of previous zoom levels
     let zoomRefetchTimeout = null;                  // Debounce timer for zoom refetch
     let isUpdatingData = false;                     // Flag to prevent refetch loop
+    let showInterpolatedDeletes = true;            // Toggle for interpolated deletes series
 
     // Formatters
     function formatNumber(n) {
@@ -306,6 +307,16 @@
         }
     }
 
+    // Toggle interpolated deletes series visibility
+    function toggleInterpolatedDeletes(show) {
+        showInterpolatedDeletes = show;
+        if (rateChart) {
+            // Series 2 is "Stored + Deleted", Series 3 is "Deleted Rate"
+            rateChart.setSeries(2, { show: show });
+            rateChart.setSeries(3, { show: show });
+        }
+    }
+
     // Chart helpers
     function getChartColors() {
         return {
@@ -547,6 +558,7 @@
                     fill: colors.total + '20',
                     width: 2,
                     points: { show: false },
+                    show: showInterpolatedDeletes,
                     value: (u, v) => v == null ? '-' : formatNumber(v) + ' msg/s'
                 },
                 {
@@ -556,6 +568,7 @@
                     width: 1,
                     dash: [4, 4],
                     points: { show: false },
+                    show: showInterpolatedDeletes,
                     value: (u, v) => v == null ? '-' : formatNumber(v) + ' msg/s'
                 }
             ],
@@ -1083,6 +1096,14 @@
 
         // Set up event listeners
         document.getElementById('stream-select').addEventListener('change', onStreamChange);
+
+        // Set up interpolated deletes checkbox
+        const interpolatedCheckbox = document.getElementById('show-interpolated-deletes');
+        if (interpolatedCheckbox) {
+            interpolatedCheckbox.addEventListener('change', (e) => {
+                toggleInterpolatedDeletes(e.target.checked);
+            });
+        }
 
         // Hide tooltips when mouse leaves all chart areas
         document.addEventListener('mousemove', (e) => {

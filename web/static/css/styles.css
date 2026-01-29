@@ -236,6 +236,38 @@ section h3 {
     font-style: italic;
 }
 
+.chart-controls {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 2rem;
+    margin-bottom: 0.75rem;
+}
+
+.chart-controls .chart-hint {
+    margin-bottom: 0;
+}
+
+.checkbox-control {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+}
+
+.checkbox-control input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin-right: 0.5rem;
+    accent-color: var(--accent-secondary);
+    cursor: pointer;
+}
+
+.checkbox-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
 .stats-panel .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));

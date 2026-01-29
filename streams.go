@@ -86,6 +86,10 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilters
 				continue
 			}
 			i++
+
+			if showProgress {
+				fmt.Print("\r" + strings.Repeat(" ", getGraphWidth(rateGraphFixedCols)) + "\r")
+			}
 		}
 	}
 

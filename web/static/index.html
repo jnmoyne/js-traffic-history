@@ -65,7 +65,13 @@
         <section class="chart-section collapsible">
             <h2 class="section-header"><span class="collapse-icon"></span>Message Rate Over Time <span id="rate-bucket-size" class="bucket-size"></span></h2>
             <div class="section-content">
-                <p class="chart-hint">Drag to zoom, double-click to reset. Solid = stored messages, Pattern = interpolated deletes</p>
+                <div class="chart-controls">
+                    <label class="checkbox-control">
+                        <input type="checkbox" id="show-interpolated-deletes" checked>
+                        <span class="checkbox-label">Interpolated Deletes</span>
+                    </label>
+                    <p class="chart-hint">Drag to zoom, double-click to reset. Solid = stored messages, Pattern = interpolated deletes</p>
+                </div>
                 <div id="rate-chart" class="chart-container"></div>
             </div>
         </section>
