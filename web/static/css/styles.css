@@ -18,12 +18,17 @@
     padding: 0;
 }
 
+html {
+    min-width: 1200px;
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
     background-color: var(--bg-primary);
     color: var(--text-primary);
     line-height: 1.6;
     min-height: 100vh;
+    min-width: 1200px;
 }
 
 header {
@@ -36,6 +41,8 @@ header {
     position: sticky;
     top: 0;
     z-index: 100;
+    width: 100%;
+    min-width: 1200px;
 }
 
 header h1 {
@@ -77,8 +84,8 @@ header h1 {
 }
 
 main {
-    max-width: 1600px;
-    margin: 0 auto;
+    width: 100%;
+    min-width: 1200px;
     padding: 2rem;
 }
 

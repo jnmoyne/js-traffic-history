@@ -15,6 +15,7 @@
     let zoomRefetchTimeout = null;                  // Debounce timer for zoom refetch
     let isUpdatingData = false;                     // Flag to prevent refetch loop
     let showInterpolatedDeletes = true;            // Toggle for interpolated deletes series
+    let useAverageDownsampling = false;            // Toggle for average vs max downsampling
 
     // Formatters
     function formatNumber(n) {
@@ -77,9 +78,14 @@
     }
 
     function updateBucketSizeIndicators(granularityNs, durationMs) {
-        const bucketText = formatBucketDuration(granularityNs);
         const durationText = formatDuration(durationMs);
-        const text = `(${durationText}, bucket size ${bucketText})`;
+        let text;
+        if (useAverageDownsampling) {
+            const bucketText = formatBucketDuration(granularityNs);
+            text = `(${durationText}, downsampled to 5000 buckets of duration ${bucketText})`;
+        } else {
+            text = `(${durationText}, peaks preserved)`;
+        }
         document.getElementById('rate-bucket-size').textContent = text;
         document.getElementById('throughput-bucket-size').textContent = text;
     }
@@ -239,6 +245,10 @@
 
             if (currentZoom.min !== null && currentZoom.max !== null) {
                 url += (url.includes('?') ? '&' : '?') + `start=${currentZoom.min}&end=${currentZoom.max}`;
+            }
+
+            if (useAverageDownsampling) {
+                url += (url.includes('?') ? '&' : '?') + 'downsample=avg';
             }
 
             const data = await fetchJSON(url);
@@ -997,7 +1007,10 @@
         }
 
         try {
-            const url = stream ? `/api/histogram?stream=${encodeURIComponent(stream)}` : '/api/histogram';
+            let url = stream ? `/api/histogram?stream=${encodeURIComponent(stream)}` : '/api/histogram';
+            if (useAverageDownsampling) {
+                url += (url.includes('?') ? '&' : '?') + 'downsample=avg';
+            }
             histogramData = await fetchJSON(url);
 
             // Store full time range for zoom reset detection
@@ -1102,6 +1115,16 @@
         if (interpolatedCheckbox) {
             interpolatedCheckbox.addEventListener('change', (e) => {
                 toggleInterpolatedDeletes(e.target.checked);
+            });
+        }
+
+        // Set up downsampling checkbox
+        const avgDownsamplingCheckbox = document.getElementById('average-downsampling');
+        if (avgDownsamplingCheckbox) {
+            avgDownsamplingCheckbox.addEventListener('change', async (e) => {
+                useAverageDownsampling = e.target.checked;
+                // Refetch data with new downsampling mode
+                await refetchHistogramForZoom();
             });
         }
 

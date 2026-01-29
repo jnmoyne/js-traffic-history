@@ -281,10 +281,15 @@ func (g *GUIServer) handleSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 // maxGUIBuckets is the maximum number of buckets to send to the GUI
-const maxGUIBuckets = 2000
+const maxGUIBuckets = 3000
 
-// downsampleHistogram reduces the number of buckets by averaging
-func downsampleHistogram(hist *RateHistogram, maxBuckets int) *RateHistogram {
+// downsampleHistogram reduces the number of buckets.
+// If useAverage is false (default), it takes the MAX rate from each group of buckets
+// to preserve peaks in the graph.
+// If useAverage is true, it calculates the average rate over the aggregated time span.
+// Counts and bytes are always summed for accurate totals in tooltips.
+// Statistics are preserved from the original histogram.
+func downsampleHistogram(hist *RateHistogram, maxBuckets int, useAverage bool) *RateHistogram {
 	if hist == nil || len(hist.Buckets) <= maxBuckets {
 		return hist
 	}
@@ -306,11 +311,25 @@ func downsampleHistogram(hist *RateHistogram, maxBuckets int) *RateHistogram {
 		}
 
 		for j := i; j < end; j++ {
+			// Sum counts and bytes for totals (used in tooltips)
 			agg.Count += buckets[j].Count
 			agg.SeqCount += buckets[j].SeqCount
 			agg.Bytes += buckets[j].Bytes
 
-			// Merge per-stream data
+			if !useAverage {
+				// Use MAX for rates to preserve peaks in the graph
+				if buckets[j].Rate > agg.Rate {
+					agg.Rate = buckets[j].Rate
+				}
+				if buckets[j].SeqRate > agg.SeqRate {
+					agg.SeqRate = buckets[j].SeqRate
+				}
+				if buckets[j].Throughput > agg.Throughput {
+					agg.Throughput = buckets[j].Throughput
+				}
+			}
+
+			// Merge per-stream data (sum for distribution)
 			if len(buckets[j].PerStream) > 0 {
 				if agg.PerStream == nil {
 					agg.PerStream = make(map[string]*StreamBucketData)
@@ -326,12 +345,14 @@ func downsampleHistogram(hist *RateHistogram, maxBuckets int) *RateHistogram {
 			}
 		}
 
-		// Calculate rates based on the aggregated time span
-		duration := agg.End.Sub(agg.Start).Seconds()
-		if duration > 0 {
-			agg.Rate = float64(agg.Count) / duration
-			agg.SeqRate = float64(agg.SeqCount) / duration
-			agg.Throughput = float64(agg.Bytes) / duration
+		// Calculate average rates if useAverage is true
+		if useAverage {
+			duration := agg.End.Sub(agg.Start).Seconds()
+			if duration > 0 {
+				agg.Rate = float64(agg.Count) / duration
+				agg.SeqRate = float64(agg.SeqCount) / duration
+				agg.Throughput = float64(agg.Bytes) / duration
+			}
 		}
 
 		newBuckets = append(newBuckets, agg)
@@ -340,7 +361,7 @@ func downsampleHistogram(hist *RateHistogram, maxBuckets int) *RateHistogram {
 	return &RateHistogram{
 		Buckets:     newBuckets,
 		Granularity: hist.Granularity * time.Duration(factor),
-		Stats:       hist.Stats, // Keep original stats
+		Stats:       hist.Stats, // Keep original stats for accurate statistics
 	}
 }
 
@@ -419,6 +440,8 @@ func (g *GUIServer) handleHistogram(w http.ResponseWriter, r *http.Request) {
 	streamName := r.URL.Query().Get("stream")
 	startParam := r.URL.Query().Get("start")
 	endParam := r.URL.Query().Get("end")
+	downsampleParam := r.URL.Query().Get("downsample")
+	useAverageDownsample := downsampleParam == "avg"
 
 	var hist *RateHistogram
 	if streamName == "" {
@@ -464,7 +487,7 @@ func (g *GUIServer) handleHistogram(w http.ResponseWriter, r *http.Request) {
 
 	// Downsample only if too many buckets
 	if hist != nil && len(hist.Buckets) > maxGUIBuckets {
-		hist = downsampleHistogram(hist, maxGUIBuckets)
+		hist = downsampleHistogram(hist, maxGUIBuckets, useAverageDownsample)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
