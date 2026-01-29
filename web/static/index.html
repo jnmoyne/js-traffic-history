@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JetStream Traffic History</title>
+    <link rel="stylesheet" href="/static/css/uplot.min.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Loading data...</div>
+    </div>
+    <header>
+        <h1>JetStream Traffic History</h1>
+        <div class="stream-selector">
+            <label for="stream-select">View:</label>
+            <select id="stream-select">
+                <option value="">Combined (All Streams)</option>
+            </select>
+        </div>
+    </header>
+
+    <main>
+        <section class="summary-panel collapsible" id="summary-panel">
+            <h2 class="section-header"><span class="collapse-icon"></span>Overview</h2>
+            <div class="section-content">
+                <div class="summary-grid">
+                    <div class="summary-item">
+                        <span class="label">Duration</span>
+                        <span class="value" id="summary-duration">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Time Range</span>
+                        <span class="value" id="summary-timerange">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Streams</span>
+                        <span class="value" id="summary-streams">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Total Messages</span>
+                        <span class="value" id="summary-messages">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Total Data</span>
+                        <span class="value" id="summary-bytes">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Avg Throughput</span>
+                        <span class="value" id="summary-throughput">-</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="collapsible" id="distribution-section">
+            <h2 class="section-header"><span class="collapse-icon"></span>Stream Distribution</h2>
+            <div class="section-content">
+                <div id="distribution-list" class="distribution-list"></div>
+            </div>
+        </section>
+
+        <section class="chart-section collapsible">
+            <h2 class="section-header"><span class="collapse-icon"></span>Message Rate Over Time <span id="rate-bucket-size" class="bucket-size"></span></h2>
+            <div class="section-content">
+                <p class="chart-hint">Drag to zoom, double-click to reset. Solid = stored messages, Pattern = interpolated deletes</p>
+                <div id="rate-chart" class="chart-container"></div>
+            </div>
+        </section>
+
+        <section class="chart-section collapsible">
+            <h2 class="section-header"><span class="collapse-icon"></span>Throughput Over Time <span id="throughput-bucket-size" class="bucket-size"></span></h2>
+            <div class="section-content">
+                <p class="chart-hint">Drag to zoom, double-click to reset</p>
+                <div id="throughput-chart" class="chart-container"></div>
+            </div>
+        </section>
+
+        <section class="stats-panel collapsible">
+            <h2 class="section-header"><span class="collapse-icon"></span>Rate Statistics <span id="rate-stats-zoom-indicator" class="zoom-indicator"></span></h2>
+            <div class="section-content">
+                <div class="stats-grid">
+                    <div class="stats-column">
+                        <h3>Stored Rate (msg/s)</h3>
+                        <table class="stats-table" id="rate-stats">
+                            <tr><td>Average</td><td id="rate-avg">-</td></tr>
+                            <tr><td>P50</td><td id="rate-p50">-</td></tr>
+                            <tr><td>P90</td><td id="rate-p90">-</td></tr>
+                            <tr><td>P99</td><td id="rate-p99">-</td></tr>
+                            <tr><td>P99.9</td><td id="rate-p999">-</td></tr>
+                            <tr><td>Min</td><td id="rate-min">-</td></tr>
+                            <tr><td>Max</td><td id="rate-max">-</td></tr>
+                            <tr><td>Std Dev</td><td id="rate-stddev">-</td></tr>
+                        </table>
+                    </div>
+                    <div class="stats-column">
+                        <h3>Stored + Deleted Rate (msg/s)</h3>
+                        <table class="stats-table" id="seq-rate-stats">
+                            <tr><td>Average</td><td id="seqrate-avg">-</td></tr>
+                            <tr><td>P50</td><td id="seqrate-p50">-</td></tr>
+                            <tr><td>P90</td><td id="seqrate-p90">-</td></tr>
+                            <tr><td>P99</td><td id="seqrate-p99">-</td></tr>
+                            <tr><td>P99.9</td><td id="seqrate-p999">-</td></tr>
+                            <tr><td>Min</td><td id="seqrate-min">-</td></tr>
+                            <tr><td>Max</td><td id="seqrate-max">-</td></tr>
+                            <tr><td>Std Dev</td><td id="seqrate-stddev">-</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats-panel collapsible">
+            <h2 class="section-header"><span class="collapse-icon"></span>Throughput Statistics <span id="tput-stats-zoom-indicator" class="zoom-indicator"></span></h2>
+            <div class="section-content">
+                <div class="stats-grid">
+                    <div class="stats-column">
+                        <h3>Throughput</h3>
+                        <table class="stats-table" id="tput-stats">
+                            <tr><td>Average</td><td id="tput-avg">-</td></tr>
+                            <tr><td>P50</td><td id="tput-p50">-</td></tr>
+                            <tr><td>P90</td><td id="tput-p90">-</td></tr>
+                            <tr><td>P99</td><td id="tput-p99">-</td></tr>
+                            <tr><td>P99.9</td><td id="tput-p999">-</td></tr>
+                            <tr><td>Min</td><td id="tput-min">-</td></tr>
+                            <tr><td>Max</td><td id="tput-max">-</td></tr>
+                            <tr><td>Std Dev</td><td id="tput-stddev">-</td></tr>
+                        </table>
+                    </div>
+                    <div class="stats-column">
+                        <h3>Message Size</h3>
+                        <table class="stats-table" id="msgsize-stats">
+                            <tr><td>Average</td><td id="msgsize-avg">-</td></tr>
+                            <tr><td>P50</td><td id="msgsize-p50">-</td></tr>
+                            <tr><td>P90</td><td id="msgsize-p90">-</td></tr>
+                            <tr><td>P99</td><td id="msgsize-p99">-</td></tr>
+                            <tr><td>P99.9</td><td id="msgsize-p999">-</td></tr>
+                            <tr><td>Min</td><td id="msgsize-min">-</td></tr>
+                            <tr><td>Max</td><td id="msgsize-max">-</td></tr>
+                            <tr><td>Std Dev</td><td id="msgsize-stddev">-</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>JetStream Traffic History Analyzer</p>
+    </footer>
+
+    <script src="/static/js/uplot.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

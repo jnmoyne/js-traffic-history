@@ -48,8 +48,9 @@ type JSONStreamSummary struct {
 
 // JSONStreamBucketData is per-stream data within a bucket
 type JSONStreamBucketData struct {
-	Count int   `json:"count"`
-	Bytes int64 `json:"bytes"`
+	Count    int   `json:"count"`
+	SeqCount int   `json:"seq_count"`
+	Bytes    int64 `json:"bytes"`
 }
 
 // JSONBucket is the JSON representation of RateBucket
@@ -189,8 +190,9 @@ func convertHistogram(h *RateHistogram) JSONHistogram {
 			buckets[i].PerStream = make(map[string]*JSONStreamBucketData, len(b.PerStream))
 			for name, data := range b.PerStream {
 				buckets[i].PerStream[name] = &JSONStreamBucketData{
-					Count: data.Count,
-					Bytes: data.Bytes,
+					Count:    data.Count,
+					SeqCount: data.SeqCount,
+					Bytes:    data.Bytes,
 				}
 			}
 		}
@@ -318,6 +320,7 @@ func downsampleHistogram(hist *RateHistogram, maxBuckets int) *RateHistogram {
 						agg.PerStream[name] = &StreamBucketData{}
 					}
 					agg.PerStream[name].Count += data.Count
+					agg.PerStream[name].SeqCount += data.SeqCount
 					agg.PerStream[name].Bytes += data.Bytes
 				}
 			}
@@ -377,6 +380,40 @@ func filterHistogramByTime(hist *RateHistogram, startTime, endTime *time.Time) *
 	}
 }
 
+// extractStreamHistogram creates a histogram for a specific stream from the combined histogram's per-stream data
+func (g *GUIServer) extractStreamHistogram(streamName string) *RateHistogram {
+	if g.combined == nil {
+		return nil
+	}
+
+	buckets := make([]RateBucket, len(g.combined.Buckets))
+	granularitySecs := g.combined.Granularity.Seconds()
+
+	for i, b := range g.combined.Buckets {
+		buckets[i] = RateBucket{
+			Start: b.Start,
+			End:   b.End,
+		}
+		if streamData, ok := b.PerStream[streamName]; ok {
+			buckets[i].Count = streamData.Count
+			buckets[i].SeqCount = streamData.SeqCount
+			buckets[i].Bytes = streamData.Bytes
+			buckets[i].Rate = float64(streamData.Count) / granularitySecs
+			buckets[i].SeqRate = float64(streamData.SeqCount) / granularitySecs
+			buckets[i].Throughput = float64(streamData.Bytes) / granularitySecs
+		}
+	}
+
+	// Calculate stats from the extracted buckets
+	stats := CalculateStatsFromBuckets(buckets)
+
+	return &RateHistogram{
+		Buckets:     buckets,
+		Granularity: g.combined.Granularity,
+		Stats:       stats,
+	}
+}
+
 // handleHistogram returns histogram data as JSON
 func (g *GUIServer) handleHistogram(w http.ResponseWriter, r *http.Request) {
 	streamName := r.URL.Query().Get("stream")
@@ -387,11 +424,21 @@ func (g *GUIServer) handleHistogram(w http.ResponseWriter, r *http.Request) {
 	if streamName == "" {
 		hist = g.combined
 	} else {
-		var ok bool
-		hist, ok = g.histograms[streamName]
-		if !ok {
-			http.Error(w, "Stream not found", http.StatusNotFound)
-			return
+		// Try to get from pre-built histograms, or extract from combined
+		if g.histograms != nil {
+			var ok bool
+			hist, ok = g.histograms[streamName]
+			if !ok {
+				http.Error(w, "Stream not found", http.StatusNotFound)
+				return
+			}
+		} else {
+			// Extract from combined histogram's per-stream data
+			hist = g.extractStreamHistogram(streamName)
+			if hist == nil {
+				http.Error(w, "Stream not found", http.StatusNotFound)
+				return
+			}
 		}
 	}
 
@@ -426,9 +473,18 @@ func (g *GUIServer) handleHistogram(w http.ResponseWriter, r *http.Request) {
 
 // handleStreams returns the list of stream names
 func (g *GUIServer) handleStreams(w http.ResponseWriter, r *http.Request) {
-	streams := make([]string, 0, len(g.histograms))
-	for name := range g.histograms {
-		streams = append(streams, name)
+	var streams []string
+	if g.histograms != nil {
+		streams = make([]string, 0, len(g.histograms))
+		for name := range g.histograms {
+			streams = append(streams, name)
+		}
+	} else if g.summary != nil {
+		// Get stream names from summary
+		streams = make([]string, 0, len(g.summary.Streams))
+		for _, s := range g.summary.Streams {
+			streams = append(streams, s.Name)
+		}
 	}
 	sort.Strings(streams)
 
@@ -479,17 +535,11 @@ func (g *GUIServer) handleDistribution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Calculate per-stream stats for the filtered time range
-	streams := make([]JSONStreamSummary, 0, len(g.histograms))
-	for name, hist := range g.histograms {
-		if hist == nil {
-			continue
-		}
+	// Calculate per-stream stats for the filtered time range using combined histogram's per-stream data
+	streamData := make(map[string]*JSONStreamSummary)
 
-		var messages int
-		var bytes int64
-
-		for _, b := range hist.Buckets {
+	if g.combined != nil {
+		for _, b := range g.combined.Buckets {
 			// Check if bucket overlaps with the time range
 			if startTime != nil && b.End.Before(*startTime) {
 				continue
@@ -497,17 +547,22 @@ func (g *GUIServer) handleDistribution(w http.ResponseWriter, r *http.Request) {
 			if endTime != nil && b.Start.After(*endTime) {
 				continue
 			}
-			messages += b.Count
-			bytes += b.Bytes
+			// Aggregate per-stream data from this bucket
+			for name, data := range b.PerStream {
+				if streamData[name] == nil {
+					streamData[name] = &JSONStreamSummary{Name: name}
+				}
+				streamData[name].Messages += data.Count
+				streamData[name].Bytes += data.Bytes
+			}
 		}
+	}
 
-		// Only include streams that have data in this range
-		if messages > 0 {
-			streams = append(streams, JSONStreamSummary{
-				Name:     name,
-				Messages: messages,
-				Bytes:    bytes,
-			})
+	// Convert to slice and filter out empty streams
+	streams := make([]JSONStreamSummary, 0, len(streamData))
+	for _, s := range streamData {
+		if s.Messages > 0 {
+			streams = append(streams, *s)
 		}
 	}
 

@@ -276,10 +276,6 @@ func run(cfg Config) error {
 		allMessages = append(allMessages, messages...)
 	}
 
-	if cfg.ShowProgress {
-		fmt.Print("\nAnalysis Results:\n\n")
-	}
-
 	// Sort all messages by timestamp for combined analysis
 	sort.Slice(allMessages, func(i, j int) bool {
 		return allMessages[i].Timestamp.Before(allMessages[j].Timestamp)
@@ -289,22 +285,25 @@ func run(cfg Config) error {
 	summary := BuildReportSummary(allMessages, len(streams))
 	var combinedHist *RateHistogram
 	if len(allMessages) > 0 {
-		combinedHist = BuildRateHistogram("combined", allMessages, cfg.RateGranularity, cfg.ShowProgress)
+		combinedHist = BuildRateHistogram("combined", allMessages, cfg.RateGranularity, cfg.ShowProgress, true)
 	}
 
-	// Build per-stream histograms
+	// GUI mode: start web server (uses combined histogram only, derives per-stream data on-demand)
+	if cfg.GUI {
+		// Clear message data to free memory - GUI derives per-stream data from combined histogram
+		allMessages = nil
+		streamMessages = nil
+		return StartGUIServer(cfg.GUIPort, cfg.GUIBrowser, combinedHist, nil, &summary)
+	}
+
+	// Build per-stream histograms for CLI mode (no per-stream tracking needed since each is a single stream)
 	streamHistograms := make(map[string]*RateHistogram)
 	for _, streamInfo := range streams {
 		messages, ok := streamMessages[streamInfo.Name]
 		if !ok || len(messages) == 0 {
 			continue
 		}
-		streamHistograms[streamInfo.Name] = BuildRateHistogram(streamInfo.Name, messages, cfg.RateGranularity, cfg.ShowProgress)
-	}
-
-	// GUI mode: start web server
-	if cfg.GUI {
-		return StartGUIServer(cfg.GUIPort, cfg.GUIBrowser, combinedHist, streamHistograms, &summary)
+		streamHistograms[streamInfo.Name] = BuildRateHistogram(streamInfo.Name, messages, cfg.RateGranularity, cfg.ShowProgress, false)
 	}
 
 	// CLI mode: print to terminal

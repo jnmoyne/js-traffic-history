@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -68,8 +69,8 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilters
 
 	// List all streams and filter for limits retention
 	streamLister := js.ListStreams(ctx)
-
 	i := 1
+
 	for streamInfo := range streamLister.Info() {
 		if (len(streamFilters) == 0 || slices.Contains(streamFilters, streamInfo.Config.Name)) && streamInfo.Config.Retention == jetstream.LimitsPolicy {
 			if showProgress {
@@ -87,8 +88,9 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilters
 			i++
 		}
 	}
+
 	if showProgress {
-		fmt.Print("\r                                                            \r")
+		fmt.Print("\r" + strings.Repeat(" ", getGraphWidth(rateGraphFixedCols)) + "\r")
 	}
 
 	if err := streamLister.Err(); err != nil {
@@ -96,18 +98,4 @@ func GetLimitsStreams(ctx context.Context, js jetstream.JetStream, streamFilters
 	}
 
 	return streamInfos, nil
-}
-
-// retentionPolicyName returns a human-readable name for the retention policy
-func retentionPolicyName(policy jetstream.RetentionPolicy) string {
-	switch policy {
-	case jetstream.LimitsPolicy:
-		return "limits"
-	case jetstream.InterestPolicy:
-		return "interest"
-	case jetstream.WorkQueuePolicy:
-		return "workqueue"
-	default:
-		return "unknown"
-	}
 }

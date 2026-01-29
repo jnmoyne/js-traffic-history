@@ -1012,8 +1012,14 @@ func formatDuration(d time.Duration) string {
 	}
 
 	hours := int(d.Hours())
-	mins := int(d.Minutes()) - hours*60
-	secs := d.Seconds() - float64(hours*3600) - float64(mins*60)
+	days := hours / 24
+	hours = hours % 24
+	mins := int(d.Minutes()) - (days*24+hours)*60
+	secs := d.Seconds() - float64((days*24+hours)*3600) - float64(mins*60)
+
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh%dm%.1fs", days, hours, mins, secs)
+	}
 	return fmt.Sprintf("%dh%dm%.1fs", hours, mins, secs)
 }
 

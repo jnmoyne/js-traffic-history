@@ -9,8 +9,9 @@ import (
 
 // StreamBucketData holds per-stream data within a bucket
 type StreamBucketData struct {
-	Count int
-	Bytes int64
+	Count    int // stored messages
+	SeqCount int // stored + interpolated deletes
+	Bytes    int64
 }
 
 // RateBucket represents a time bucket with message count and throughput
@@ -178,7 +179,8 @@ func BuildReportSummary(messages []MessageData, streamCount int) ReportSummary {
 }
 
 // BuildRateHistogram creates a rate histogram from message data
-func BuildRateHistogram(streamName string, messages []MessageData, granularity time.Duration, showProgress bool) *RateHistogram {
+// trackPerStream should be true only for combined histograms (where per-stream breakdown is needed)
+func BuildRateHistogram(streamName string, messages []MessageData, granularity time.Duration, showProgress bool, trackPerStream bool) *RateHistogram {
 	if len(messages) == 0 {
 		return &RateHistogram{Granularity: granularity}
 	}
@@ -241,17 +243,20 @@ func BuildRateHistogram(streamName string, messages []MessageData, granularity t
 			}
 		}
 
-		// Track per-stream data
-		if buckets[bucketIdx].PerStream == nil {
-			buckets[bucketIdx].PerStream = make(map[string]*StreamBucketData)
+		// Track per-stream data (only for combined histograms)
+		if trackPerStream {
+			if buckets[bucketIdx].PerStream == nil {
+				buckets[bucketIdx].PerStream = make(map[string]*StreamBucketData)
+			}
+			streamData := buckets[bucketIdx].PerStream[msg.StreamName]
+			if streamData == nil {
+				streamData = &StreamBucketData{}
+				buckets[bucketIdx].PerStream[msg.StreamName] = streamData
+			}
+			streamData.Count++
+			streamData.SeqCount++ // Each stored message also counts toward SeqCount
+			streamData.Bytes += int64(msg.Size)
 		}
-		streamData := buckets[bucketIdx].PerStream[msg.StreamName]
-		if streamData == nil {
-			streamData = &StreamBucketData{}
-			buckets[bucketIdx].PerStream[msg.StreamName] = streamData
-		}
-		streamData.Count++
-		streamData.Bytes += int64(msg.Size)
 	}
 
 	// Interpolate deleted messages: distribute gaps between consecutive messages
@@ -304,11 +309,12 @@ func BuildRateHistogram(streamName string, messages []MessageData, granularity t
 		remainder := gap % bucketSpan
 
 		for b := prevBucketIdx; b <= currBucketIdx; b++ {
-			buckets[b].SeqCount += perBucket
+			addCount := perBucket
 			if remainder > 0 {
-				buckets[b].SeqCount++
+				addCount++
 				remainder--
 			}
+			buckets[b].SeqCount += addCount
 		}
 	}
 
