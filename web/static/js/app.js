@@ -14,6 +14,8 @@
     let zoomHistory = [];                           // Stack of previous zoom levels
     let zoomRefetchTimeout = null;                  // Debounce timer for zoom refetch
     let isUpdatingData = false;                     // Flag to prevent refetch loop
+    let requestVersion = 0;                         // Counter to ignore stale responses
+    let currentAbortController = null;              // AbortController for cancelling in-flight requests
     let showInterpolatedDeletes = true;            // Toggle for interpolated deletes series
     let useAverageDownsampling = false;            // Toggle for average vs max downsampling
 
@@ -109,8 +111,8 @@
     }
 
     // API helpers
-    async function fetchJSON(url) {
-        const response = await fetch(url);
+    async function fetchJSON(url, options = {}) {
+        const response = await fetch(url, options);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -191,6 +193,15 @@
 
     // Go back to previous zoom level
     function zoomBack() {
+        // Clear any pending refetch
+        if (zoomRefetchTimeout) {
+            clearTimeout(zoomRefetchTimeout);
+            zoomRefetchTimeout = null;
+        }
+
+        // Capture version for this operation
+        const thisVersion = ++requestVersion;
+
         if (zoomHistory.length > 0) {
             const previousZoom = zoomHistory.pop();
             // Set flag BEFORE setScale to prevent onZoomChange from pushing to history
@@ -203,13 +214,16 @@
                 });
             }
             setTimeout(() => {
+                if (thisVersion !== requestVersion) return;
                 isUpdatingData = false;
                 // Trigger refetch for the restored zoom level
                 zoomRefetchTimeout = setTimeout(async () => {
                     try {
                         await refetchHistogramForZoom();
                     } catch (err) {
-                        console.error('refetchHistogramForZoom failed:', err);
+                        if (err.name !== 'AbortError') {
+                            console.error('refetchHistogramForZoom failed:', err);
+                        }
                     }
                 }, 100);
             }, 50);
@@ -223,13 +237,16 @@
                     max: fullTimeRange.max
                 });
                 setTimeout(() => {
+                    if (thisVersion !== requestVersion) return;
                     isUpdatingData = false;
                     // Trigger refetch for full range
                     zoomRefetchTimeout = setTimeout(async () => {
                         try {
                             await refetchHistogramForZoom();
                         } catch (err) {
-                            console.error('refetchHistogramForZoom failed:', err);
+                            if (err.name !== 'AbortError') {
+                                console.error('refetchHistogramForZoom failed:', err);
+                            }
                         }
                     }, 100);
                 }, 50);
@@ -238,6 +255,15 @@
     }
 
     async function refetchHistogramForZoom() {
+        // Increment version and capture it for this request
+        const thisRequestVersion = ++requestVersion;
+
+        // Abort any in-flight request
+        if (currentAbortController) {
+            currentAbortController.abort();
+        }
+        currentAbortController = new AbortController();
+
         try {
             let url = currentStream
                 ? `/api/histogram?stream=${encodeURIComponent(currentStream)}`
@@ -251,7 +277,12 @@
                 url += (url.includes('?') ? '&' : '?') + 'downsample=avg';
             }
 
-            const data = await fetchJSON(url);
+            const data = await fetchJSON(url, { signal: currentAbortController.signal });
+
+            // Check if this response is still relevant (no newer request has started)
+            if (thisRequestVersion !== requestVersion) {
+                return;
+            }
 
             if (!data || !data.buckets || data.buckets.length === 0) {
                 // Still update distribution to show "no data" message
@@ -308,12 +339,21 @@
             } finally {
                 // Clear flag after a short delay to allow any triggered events to be ignored
                 setTimeout(() => {
-                    isUpdatingData = false;
+                    // Only clear if we're still the current request
+                    if (thisRequestVersion === requestVersion) {
+                        isUpdatingData = false;
+                    }
                 }, 100);
             }
         } catch (err) {
+            // Ignore abort errors
+            if (err.name === 'AbortError') {
+                return;
+            }
             console.error('Failed to refetch histogram for zoom:', err);
-            isUpdatingData = false;
+            if (thisRequestVersion === requestVersion) {
+                isUpdatingData = false;
+            }
         }
     }
 
@@ -998,20 +1038,41 @@
         showLoading('rate-chart');
         showLoading('throughput-chart');
 
-        // Reset zoom state when loading new stream
-        currentZoom = { min: null, max: null };
-        zoomHistory = [];
+        // Increment version to invalidate any pending operations
+        const thisRequestVersion = ++requestVersion;
+
+        // Save current zoom state to restore after loading new stream
+        const savedZoom = (currentZoom.min !== null && currentZoom.max !== null)
+            ? { min: currentZoom.min, max: currentZoom.max }
+            : null;
+
+        // Clear pending refetch timeout
         if (zoomRefetchTimeout) {
             clearTimeout(zoomRefetchTimeout);
             zoomRefetchTimeout = null;
         }
 
+        // Abort any in-flight request
+        if (currentAbortController) {
+            currentAbortController.abort();
+        }
+        currentAbortController = new AbortController();
+
+        // Reset the updating flag since we're starting fresh
+        isUpdatingData = false;
+
         try {
+            // Always fetch full data first to get correct fullTimeRange
             let url = stream ? `/api/histogram?stream=${encodeURIComponent(stream)}` : '/api/histogram';
             if (useAverageDownsampling) {
                 url += (url.includes('?') ? '&' : '?') + 'downsample=avg';
             }
-            histogramData = await fetchJSON(url);
+            histogramData = await fetchJSON(url, { signal: currentAbortController.signal });
+
+            // Check if this response is still relevant
+            if (thisRequestVersion !== requestVersion) {
+                return;
+            }
 
             // Store full time range for zoom reset detection
             if (histogramData && histogramData.buckets && histogramData.buckets.length > 0) {
@@ -1054,9 +1115,55 @@
                 updateDistributionFromBuckets(histogramData.buckets);
             }
 
-            // Reset zoom indicators since we're showing full range
-            updateZoomIndicators(false);
+            // Restore zoom if we had one and it's within the new data's time range
+            if (savedZoom && fullTimeRange.min !== null && fullTimeRange.max !== null) {
+                // Check if saved zoom overlaps with new data's time range
+                if (savedZoom.max > fullTimeRange.min && savedZoom.min < fullTimeRange.max) {
+                    // Clamp zoom to the new data's range
+                    const clampedZoom = {
+                        min: Math.max(savedZoom.min, fullTimeRange.min),
+                        max: Math.min(savedZoom.max, fullTimeRange.max)
+                    };
+                    currentZoom = clampedZoom;
+                    isUpdatingData = true;
+                    if (rateChart) {
+                        rateChart.setScale('x', {
+                            min: clampedZoom.min,
+                            max: clampedZoom.max
+                        });
+                    }
+                    setTimeout(() => {
+                        // Only proceed if we're still the current request
+                        if (thisRequestVersion !== requestVersion) {
+                            return;
+                        }
+                        isUpdatingData = false;
+                        // Trigger refetch for the restored zoom level
+                        zoomRefetchTimeout = setTimeout(async () => {
+                            try {
+                                await refetchHistogramForZoom();
+                            } catch (err) {
+                                if (err.name !== 'AbortError') {
+                                    console.error('refetchHistogramForZoom failed:', err);
+                                }
+                            }
+                        }, 100);
+                    }, 50);
+                } else {
+                    // Saved zoom doesn't overlap with new data, reset zoom
+                    currentZoom = { min: null, max: null };
+                    updateZoomIndicators(false);
+                }
+            } else {
+                // No saved zoom, show full range
+                currentZoom = { min: null, max: null };
+                updateZoomIndicators(false);
+            }
         } catch (err) {
+            // Ignore abort errors
+            if (err.name === 'AbortError') {
+                return;
+            }
             console.error('Failed to load histogram:', err);
             showError('rate-chart', 'Failed to load rate data');
             showError('throughput-chart', 'Failed to load throughput data');
@@ -1082,6 +1189,10 @@
             await loadHistogram(currentStream);
             hideLoadingOverlay();
         } catch (err) {
+            // Ignore abort errors (happens when rapidly switching streams)
+            if (err.name === 'AbortError') {
+                return;
+            }
             console.error('Failed to load histogram:', err);
             updateLoadingMessage('Error: ' + err.message);
             setTimeout(() => hideLoadingOverlay(), 5000);

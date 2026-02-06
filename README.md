@@ -33,6 +33,9 @@ Global Flags:
       --since=SINCE        Relative start time (e.g., 1h, 30m, 2h30m)
       --[no-]progress      Show progress during message fetching
       --[no-]distribution  Show message distribution over streams
+      --[no-]gui           Launch web-based interactive GUI
+      --gui-port=8080      Port for web-based GUI server
+      --[no-]browser       Auto-open browser when GUI starts
 ```
 ## Notes
 
