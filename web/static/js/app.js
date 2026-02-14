@@ -18,6 +18,19 @@
     let currentAbortController = null;              // AbortController for cancelling in-flight requests
     let showInterpolatedDeletes = true;            // Toggle for interpolated deletes series
     let useAverageDownsampling = false;            // Toggle for average vs max downsampling
+    let useLogScale = false;                       // Toggle for logarithmic y-axis scale
+
+    // Transform value for log scale: apply log10, keep zero as zero
+    function logTransform(v) {
+        if (!useLogScale) return v;
+        return v > 0 ? Math.log10(v) : 0;
+    }
+
+    // Convert log-transformed value back to original for display
+    function logInverse(v) {
+        if (!useLogScale) return v;
+        return v > 0 ? Math.pow(10, v) : 0;
+    }
 
     // Formatters
     function formatNumber(n) {
@@ -302,16 +315,16 @@
                 // Update rate chart data
                 if (rateChart) {
                     const timestamps = data.buckets.map(b => new Date(b.start).getTime() / 1000);
-                    const storedRates = data.buckets.map(b => b.rate);
-                    const totalRates = data.buckets.map(b => b.seq_rate);
-                    const deletedRates = data.buckets.map(b => b.seq_rate - b.rate);
+                    const storedRates = data.buckets.map(b => logTransform(b.rate));
+                    const totalRates = data.buckets.map(b => logTransform(b.seq_rate));
+                    const deletedRates = data.buckets.map(b => logTransform(b.seq_rate - b.rate));
                     rateChart.setData([timestamps, storedRates, totalRates, deletedRates]);
                 }
 
                 // Update throughput chart data
                 if (throughputChart) {
                     const timestamps = data.buckets.map(b => new Date(b.start).getTime() / 1000);
-                    const throughputs = data.buckets.map(b => b.throughput);
+                    const throughputs = data.buckets.map(b => logTransform(b.throughput));
                     throughputChart.setData([timestamps, throughputs]);
                 }
 
@@ -367,6 +380,39 @@
         }
     }
 
+    // Toggle logarithmic scale and rebuild charts
+    function toggleLogScale(enabled) {
+        useLogScale = enabled;
+        if (histogramData) {
+            // Prevent zoom handler from firing during chart rebuild
+            isUpdatingData = true;
+
+            const rateContainer = document.getElementById('rate-chart');
+            if (rateChart) {
+                rateChart.destroy();
+            }
+            rateChart = createRateChart(rateContainer, histogramData);
+
+            const tputContainer = document.getElementById('throughput-chart');
+            if (throughputChart) {
+                throughputChart.destroy();
+            }
+            throughputChart = createThroughputChart(tputContainer, histogramData);
+
+            // Restore zoom if we were zoomed in
+            if (currentZoom.min !== null && currentZoom.max !== null) {
+                if (rateChart) {
+                    rateChart.setScale('x', { min: currentZoom.min, max: currentZoom.max });
+                }
+                if (throughputChart) {
+                    throughputChart.setScale('x', { min: currentZoom.min, max: currentZoom.max });
+                }
+            }
+
+            setTimeout(() => { isUpdatingData = false; }, 100);
+        }
+    }
+
     // Chart helpers
     function getChartColors() {
         return {
@@ -394,9 +440,9 @@
 
         const colors = getChartColors();
         const ts = rateChart.data[0][idx];
-        const stored = rateChart.data[1][idx];
-        const total = rateChart.data[2][idx];
-        const deleted = rateChart.data[3][idx];
+        const stored = logInverse(rateChart.data[1][idx]);
+        const total = logInverse(rateChart.data[2][idx]);
+        const deleted = logInverse(rateChart.data[3][idx]);
 
         let streamsHtml = '';
         // Show per-stream activity when viewing combined (all streams)
@@ -455,7 +501,7 @@
 
         const colors = getChartColors();
         const ts = throughputChart.data[0][idx];
-        const tput = throughputChart.data[1][idx];
+        const tput = logInverse(throughputChart.data[1][idx]);
 
         let streamsHtml = '';
         // Show per-stream activity when viewing combined (all streams)
@@ -532,9 +578,9 @@
 
         const colors = getChartColors();
         const timestamps = data.buckets.map(b => new Date(b.start).getTime() / 1000);
-        const storedRates = data.buckets.map(b => b.rate);
-        const totalRates = data.buckets.map(b => b.seq_rate);
-        const deletedRates = data.buckets.map(b => b.seq_rate - b.rate);
+        const storedRates = data.buckets.map(b => logTransform(b.rate));
+        const totalRates = data.buckets.map(b => logTransform(b.seq_rate));
+        const deletedRates = data.buckets.map(b => logTransform(b.seq_rate - b.rate));
 
         // Create shared tooltip element if not exists
         if (!rateTooltip) {
@@ -574,7 +620,7 @@
             },
             scales: {
                 x: { time: true },
-                y: { auto: true, range: [0, null] }
+                y: { auto: true, range: useLogScale ? undefined : [0, null] }
             },
             axes: [
                 {
@@ -587,7 +633,7 @@
                     grid: { stroke: colors.grid },
                     ticks: { stroke: colors.grid },
                     size: 60,
-                    values: (u, vals) => vals.map(v => formatNumber(v))
+                    values: (u, vals) => vals.map(v => formatNumber(logInverse(v)))
                 }
             ],
             series: [
@@ -600,7 +646,7 @@
                     fill: colors.stored + '40',
                     width: 2,
                     points: { show: false },
-                    value: (u, v) => v == null ? '-' : formatNumber(v) + ' msg/s'
+                    value: (u, v) => v == null ? '-' : formatNumber(useLogScale ? Math.pow(10, v) : v) + ' msg/s'
                 },
                 {
                     label: 'Stored + Deleted',
@@ -609,7 +655,7 @@
                     width: 2,
                     points: { show: false },
                     show: showInterpolatedDeletes,
-                    value: (u, v) => v == null ? '-' : formatNumber(v) + ' msg/s'
+                    value: (u, v) => v == null ? '-' : formatNumber(useLogScale ? Math.pow(10, v) : v) + ' msg/s'
                 },
                 {
                     label: 'Deleted Rate',
@@ -619,7 +665,7 @@
                     dash: [4, 4],
                     points: { show: false },
                     show: showInterpolatedDeletes,
-                    value: (u, v) => v == null ? '-' : formatNumber(v) + ' msg/s'
+                    value: (u, v) => v == null ? '-' : formatNumber(useLogScale ? Math.pow(10, v) : v) + ' msg/s'
                 }
             ],
             legend: {
@@ -658,10 +704,11 @@
         container.innerHTML = '';
         const chart = new uPlot(opts, [timestamps, storedRates, totalRates, deletedRates], container);
 
-        // Double-click to go back to previous zoom level
-        container.addEventListener('dblclick', () => {
-            zoomBack();
-        });
+        // Double-click to go back to previous zoom level (only add once)
+        if (!container._dblclickZoom) {
+            container._dblclickZoom = () => { zoomBack(); };
+            container.addEventListener('dblclick', container._dblclickZoom);
+        }
 
         // Handle resize
         const resizeObserver = new ResizeObserver(entries => {
@@ -685,7 +732,7 @@
 
         const colors = getChartColors();
         const timestamps = data.buckets.map(b => new Date(b.start).getTime() / 1000);
-        const throughputs = data.buckets.map(b => b.throughput);
+        const throughputs = data.buckets.map(b => logTransform(b.throughput));
 
         // Create shared tooltip element if not exists
         if (!throughputTooltip) {
@@ -725,7 +772,7 @@
             },
             scales: {
                 x: { time: true },
-                y: { auto: true, range: [0, null] }
+                y: { auto: true, range: useLogScale ? undefined : [0, null] }
             },
             axes: [
                 {
@@ -738,7 +785,7 @@
                     grid: { stroke: colors.grid },
                     ticks: { stroke: colors.grid },
                     size: 80,
-                    values: (u, vals) => vals.map(v => formatBytes(v) + '/s')
+                    values: (u, vals) => vals.map(v => formatBytes(logInverse(v)) + '/s')
                 }
             ],
             series: [
@@ -751,7 +798,7 @@
                     fill: colors.throughput + '40',
                     width: 2,
                     points: { show: false },
-                    value: (u, v) => v == null ? '-' : formatBytes(v) + '/s'
+                    value: (u, v) => v == null ? '-' : formatBytes(useLogScale ? Math.pow(10, v) : v) + '/s'
                 }
             ],
             legend: {
@@ -790,10 +837,11 @@
         container.innerHTML = '';
         const chart = new uPlot(opts, [timestamps, throughputs], container);
 
-        // Double-click to go back to previous zoom level
-        container.addEventListener('dblclick', () => {
-            zoomBack();
-        });
+        // Double-click to go back to previous zoom level (only add once)
+        if (!container._dblclickZoom) {
+            container._dblclickZoom = () => { zoomBack(); };
+            container.addEventListener('dblclick', container._dblclickZoom);
+        }
 
         // Handle resize
         const resizeObserver = new ResizeObserver(entries => {
@@ -1229,15 +1277,42 @@
             });
         }
 
-        // Set up downsampling checkbox
-        const avgDownsamplingCheckbox = document.getElementById('average-downsampling');
-        if (avgDownsamplingCheckbox) {
-            avgDownsamplingCheckbox.addEventListener('change', async (e) => {
-                useAverageDownsampling = e.target.checked;
-                // Refetch data with new downsampling mode
-                await refetchHistogramForZoom();
+        // Set up chart mode radio buttons (allow deselection by clicking active one)
+        const chartModeRadios = document.querySelectorAll('input[name="chart-mode"]');
+        let activeChartMode = null;
+        chartModeRadios.forEach(radio => {
+            radio.addEventListener('click', async (e) => {
+                if (activeChartMode === e.target.value) {
+                    // Deselect: clicking the already-active radio
+                    e.target.checked = false;
+                    activeChartMode = null;
+                    if (e.target.value === 'log') {
+                        toggleLogScale(false);
+                    } else {
+                        useAverageDownsampling = false;
+                        await refetchHistogramForZoom();
+                    }
+                } else {
+                    // Select new mode, deactivate the other
+                    const prevMode = activeChartMode;
+                    activeChartMode = e.target.value;
+                    if (e.target.value === 'log') {
+                        if (prevMode === 'downsample') {
+                            useAverageDownsampling = false;
+                            // Refetch without downsampling, then apply log scale
+                            await refetchHistogramForZoom();
+                        }
+                        toggleLogScale(true);
+                    } else {
+                        if (prevMode === 'log') {
+                            toggleLogScale(false);
+                        }
+                        useAverageDownsampling = true;
+                        await refetchHistogramForZoom();
+                    }
+                }
             });
-        }
+        });
 
         // Hide tooltips when mouse leaves all chart areas
         document.addEventListener('mousemove', (e) => {

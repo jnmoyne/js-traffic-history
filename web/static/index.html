@@ -62,6 +62,19 @@
             </div>
         </section>
 
+        <div class="chart-controls shared-chart-controls">
+            <span class="radio-group">
+                <label class="radio-control">
+                    <input type="radio" name="chart-mode" id="log-scale" value="log">
+                    <span class="radio-label">Logarithmic</span>
+                </label>
+                <label class="radio-control">
+                    <input type="radio" name="chart-mode" id="average-downsampling" value="downsample">
+                    <span class="radio-label">Downsampling</span>
+                </label>
+            </span>
+        </div>
+
         <section class="chart-section collapsible">
             <h2 class="section-header"><span class="collapse-icon"></span>Message Rate Over Time <span id="rate-bucket-size" class="bucket-size"></span></h2>
             <div class="section-content">
@@ -69,10 +82,6 @@
                     <label class="checkbox-control">
                         <input type="checkbox" id="show-interpolated-deletes" checked>
                         <span class="checkbox-label">Interpolated Deletes</span>
-                    </label>
-                    <label class="checkbox-control">
-                        <input type="checkbox" id="average-downsampling">
-                        <span class="checkbox-label">Downsampling</span>
                     </label>
                     <p class="chart-hint">Drag to zoom, double-click to reset. Solid = stored messages, Pattern = interpolated deletes</p>
                 </div>
