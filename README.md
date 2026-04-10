@@ -39,5 +39,4 @@ Global Flags:
 ```
 ## Notes
 
-- 
 - Running this can take time as it will when starting try to get every single message from every single limits stream within the specified time interval (one by one , using batched direct gets to try and limit the impact).
